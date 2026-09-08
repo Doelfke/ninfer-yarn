@@ -207,6 +207,8 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--spec mtp\|dflash\|dflash2` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash/DFlash2 `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
+| `--rope-scaling-factor F` | YaRN position-scaling factor `1.0..32.0`; `1.0` disables scaling, larger values extend the effective context limit by the factor | `1.0` |
+| `--rope-scaling-original-context N` | YaRN ramp threshold; positions at or below it are unscaled | `262144` |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-thinking` | disable thinking in prompt rendering | thinking on |
@@ -244,8 +246,15 @@ Run `./build/apps/ninfer --help` for the exact option contract.
 
 ## Context and memory
 
-The registered model IDs have a native context limit of 262,144 tokens. The practical allocation
-on one RTX 5090 depends on the selected artifact, media workload, output budget, and KV-cache type.
+The registered model IDs have a native context limit of 262,144 tokens. `--rope-scaling-factor`
+applies YaRN linear position scaling to extend it: positions at or below
+`--rope-scaling-original-context` are unchanged, larger positions map to
+`original_context + (position - original_context) / factor`, and `--max-context` may then exceed the
+native limit up to `min(native * factor, 8388608)`. The factor must be at least `1.0` and is not
+supported with `--spec dflash` or `--spec dflash2`; KV capacity still bounds the physical pool, so
+long contexts need enough device memory (often with a quantized `--kv-dtype`). The practical
+allocation on one RTX 5090 depends on the selected artifact, media workload, output budget, and
+KV-cache type.
 Artifact identity selects the weight profile;
 `--kv-dtype` selects runtime KV storage. The prepared prompt must fit
 `--max-context`; generation stops at the remaining context capacity when necessary.

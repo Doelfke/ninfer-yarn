@@ -643,8 +643,21 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
 }
 
 void validate_target_options(DeviceContext& device, const EngineOptions& options) {
-    if (options.max_context == 0 || options.max_context > Variant::maximum_context) {
-        throw std::invalid_argument("max_context exceeds the variant native context capacity");
+    const float raw_max = static_cast<float>(Variant::maximum_context) *
+        (options.rope_scaling_factor > 1.0F ? options.rope_scaling_factor : 1.0F);
+    const std::uint32_t effective_max = static_cast<std::uint32_t>(
+        std::min(raw_max, static_cast<float>(ops::kCausalAttentionMaximumVisibleKeys)));
+    if (options.rope_scaling_factor < 1.0F) {
+        throw std::invalid_argument("rope_scaling_factor must be >= 1.0");
+    }
+    if (options.rope_scaling_factor > 1.0F &&
+        (options.speculative.backend == SpeculativeBackend::DFlash ||
+         options.speculative.backend == SpeculativeBackend::DFlash2)) {
+        throw std::invalid_argument(
+            "rope_scaling_factor is not supported with masked draft speculative decoding");
+    }
+    if (options.max_context == 0 || options.max_context > effective_max) {
+        throw std::invalid_argument("max_context exceeds the variant effective context capacity");
     }
     if (options.prefill_chunk == 0 || options.prefill_chunk % kPrefillChunkAlignment != 0) {
         throw std::invalid_argument("prefill_chunk must be a nonzero multiple of 128");
@@ -727,6 +740,8 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->use_cuda_graph      = inputs.use_cuda_graph;
     impl->causal_scoring      = inputs.causal_scoring;
     impl->device              = inputs.device;
+    impl->rope_scaling_factor = inputs.rope_scaling_factor;
+    impl->rope_scaling_original_context = inputs.rope_scaling_original_context;
     impl->context_cache       = inputs.context_cache;
     impl->kv_storage          = inputs.kv_storage;
     impl->persistent          = persistent_layout(*impl);
@@ -798,6 +813,8 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .use_cuda_graph      = options.use_cuda_graph,
         .causal_scoring      = options.purpose == EnginePurpose::CausalScoring,
         .device              = options.device,
+        .rope_scaling_factor = options.rope_scaling_factor,
+        .rope_scaling_original_context = options.rope_scaling_original_context,
         .context_cache       = options.context_cache,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);

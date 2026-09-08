@@ -37,6 +37,22 @@ std::uint32_t normalized_private_capacity(const ContextCacheOptions& options) {
 
 using Clock = std::chrono::steady_clock;
 
+// Host-side YaRN position scaling: positions <= original_context are unchanged;
+// positions beyond the threshold are compressed by factor. Matches the device kernel
+// scale_positions_yarn_kernel in ops/kernel/position.cuh.
+std::int32_t yarn_scale_position(std::int32_t position, std::uint32_t original_context,
+                                 float factor) noexcept {
+    if (factor == 1.0F ||
+        position <= static_cast<std::int32_t>(original_context)) {
+        return position;
+    }
+    const float scaled = static_cast<float>(original_context) +
+                         (static_cast<float>(position - static_cast<std::int32_t>(original_context))) /
+                             factor +
+                         0.5F;
+    return static_cast<std::int32_t>(scaled);
+}
+
 std::uint64_t elapsed_ns(Clock::time_point started) noexcept {
     const auto elapsed =
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started).count();
@@ -734,6 +750,8 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
       speculative_backend(plan.speculative_backend), kv_storage(plan.kv_storage),
       proposal_head(plan.proposal_head), vision_enabled(plan.features.vision),
       use_cuda_graph(plan.use_cuda_graph), causal_scoring(plan.causal_scoring),
+      rope_scaling_factor(plan.rope_scaling_factor),
+      rope_scaling_original_context(plan.rope_scaling_original_context),
       kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
       persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
@@ -11036,7 +11054,9 @@ void ProgramImplCore::prepare_graphs() {
             }
         }
         set_device_i32(io.pos, checked_i32(frontier, "graph representative position"));
-        set_device_i32(io.rope_pos, checked_i32(frontier, "graph representative rope position"));
+        set_device_i32(io.rope_pos,
+                       yarn_scale_position(checked_i32(frontier, "graph representative rope position"),
+                                           rope_scaling_original_context, rope_scaling_factor));
         if (io.mtp) {
             set_device_i32(io.mtp->position,
                            checked_i32(frontier, "graph representative MTP position"));
@@ -11124,7 +11144,9 @@ void ProgramImplCore::prepare_graphs() {
                                        io,
                                        prefill_hidden,
                                        prefill_chunk,
-                                       proposal_head};
+                                       proposal_head,
+                                       rope_scaling_factor,
+                                       rope_scaling_original_context};
     };
 
     if (speculative_backend == SpeculativeBackend::None) {
@@ -11487,7 +11509,14 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
             const schedule::MtpBridgeInput bridge{
                 .previous_hidden = &previous_hidden,
                 .position        = checked_i32(staged.base - 1, "MTP bridge position"),
-                .rope_position   = prompt_rope_position(staged.prompt, staged.base - 1),
+                .rope_position   = [&, this] {
+                    auto rp = prompt_rope_position(staged.prompt, staged.base - 1);
+                    for (int axis = 0; axis < 3; ++axis) {
+                        rp[axis] = yarn_scale_position(rp[axis], rope_scaling_original_context,
+                                                       rope_scaling_factor);
+                    }
+                    return rp;
+                }(),
             };
             if (staged.vision) {
                 schedule::mtp_bridge_multimodal(schedule_state, staged.prompt, *staged.vision,
@@ -11626,15 +11655,21 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
             schedule::sample_from_hidden(schedule_state, sequence.tail_hidden,
                                          checked_i32(staged.prompt_tokens, "sample position"),
                                          ops::kSamplePurposePrefill);
-            set_device_i32(io.rope_pos, checked_i32(staged.prompt_tokens, "rope position") +
-                                            sequence.rope_delta);
+            set_device_i32(io.rope_pos,
+                           yarn_scale_position(checked_i32(staged.prompt_tokens, "rope position") +
+                                               sequence.rope_delta,
+                                               rope_scaling_original_context, rope_scaling_factor));
             if (staged.prepare_mtp) {
                 if (staged.mtp_bridge != MtpBridgeMode::AfterExactHit) {
                     throw std::logic_error("zero-suffix MTP reuse has no exact-hit bridge");
                 }
                 mark_workspace_usage(workspace_plan.mtp_prefill);
-                const auto bridge_rope =
-                    prompt_rope_position(staged.prompt, staged.prompt_tokens - 1);
+                auto bridge_rope = prompt_rope_position(staged.prompt, staged.prompt_tokens - 1);
+                for (int axis = 0; axis < 3; ++axis) {
+                    bridge_rope[axis] = yarn_scale_position(bridge_rope[axis],
+                                                            rope_scaling_original_context,
+                                                            rope_scaling_factor);
+                }
                 schedule::mtp_bridge_and_propose(
                     schedule_state, io.token, sequence.tail_hidden,
                     checked_i32(staged.prompt_tokens - 1, "MTP full-prefix bridge position"),
@@ -11774,7 +11809,9 @@ ProgramImplCore::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
             ordinary_host_ingress->cache_positions[row] =
                 checked_i32(frontier, "ordinary batch position");
             ordinary_host_ingress->rope_positions[row] =
-                checked_i32(frontier, "ordinary batch RoPE position") + sequence.rope_delta;
+                yarn_scale_position(checked_i32(frontier, "ordinary batch RoPE position") +
+                                     sequence.rope_delta,
+                                     rope_scaling_original_context, rope_scaling_factor);
             ordinary_host_ingress->text_kv_table_rows[row] =
                 text_kv_addresses->bound_row(sequence.kv->text);
             const StateImageSelectors selectors                 = state_selectors(sequence);
@@ -11929,7 +11966,9 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
             for (std::uint32_t j = 0; j < width; ++j) {
                 const std::uint32_t position = frontier + std::min(j, extent);
                 mtp_host_ingress->target_rope_positions[row * width + j] =
-                    checked_i32(position, "MTP batch RoPE position") + sequence.rope_delta;
+                    yarn_scale_position(checked_i32(position, "MTP batch RoPE position") +
+                                        sequence.rope_delta,
+                                        rope_scaling_original_context, rope_scaling_factor);
             }
             mtp_host_ingress->text_kv_table_rows[row] =
                 text_kv_addresses->bound_row(sequence.kv->text);

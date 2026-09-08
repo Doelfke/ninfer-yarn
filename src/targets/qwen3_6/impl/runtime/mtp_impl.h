@@ -3,11 +3,13 @@
 
 #include "core/nvtx.h"
 #include "ninfer/ops/mtp_round.h"
+#include "ninfer/ops/position.h"
 #include "ninfer/ops/scatter.h"
 #include "ninfer/ops/scalar.h"
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
@@ -157,6 +159,17 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                         ar_positions, ar_rope_positions, ar_valid_columns,
                                         static_cast<std::int32_t>(state.text_cache.max_context()),
                                         state.execution.device.stream);
+            if (state.execution.rope_scaling_factor != 1.0F) {
+                const std::int32_t ar_steps = std::max(static_cast<std::int32_t>(k) - 1, 1);
+                for (std::int32_t s = 0; s < ar_steps; ++s) {
+                    Tensor ar_rope_slice =
+                        ar_rope_positions.slice(1, s, 1).view({batch_size});
+                    ops::scale_positions_yarn(ar_rope_slice,
+                                              state.execution.rope_scaling_original_context,
+                                              state.execution.rope_scaling_factor, ar_rope_slice,
+                                              state.execution.device.stream);
+                }
+            }
             card.mtp_forward_decode_batch(alignment_ids, target_hidden, target_positions,
                                           target_rope, licensed_counts, mtp_rows, envelopes.batch,
                                           alignment_hidden);

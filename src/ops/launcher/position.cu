@@ -28,4 +28,14 @@ void offset_i32_positions_block_launch(const Tensor& source, const Tensor& delta
     CUDA_CHECK(cudaGetLastError());
 }
 
+void scale_positions_yarn_launch(const Tensor& source, std::uint32_t original_context,
+                                 float factor, Tensor& destination, cudaStream_t stream) {
+    constexpr int block = 256;
+    const int grid      = div_up(source.ne[0], block);
+    scale_positions_yarn_kernel<<<grid, block, 0, stream>>>(
+        static_cast<std::int32_t*>(destination.data), source.ne[0],
+        static_cast<std::int32_t>(original_context), factor);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 } // namespace ninfer::ops::detail

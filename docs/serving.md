@@ -780,6 +780,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--spec mtp\|dflash\|dflash2` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash/DFlash2 `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
+| `--rope-scaling-factor F` | YaRN position-scaling factor `1.0..32.0`; `1.0` disables scaling, larger values extend the effective context limit by the factor | `1.0` |
+| `--rope-scaling-original-context N` | YaRN ramp threshold; positions at or below it are unscaled | `262144` |
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |

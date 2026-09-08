@@ -121,6 +121,18 @@ Options parse_options(int argc, char** argv) {
             }
         } else if (option == "--output") {
             out.output = std::filesystem::path(value("--output"));
+        } else if (option == "--rope-scaling-factor") {
+            const std::string_view text = value("--rope-scaling-factor");
+            double parsed{};
+            const auto [end, err] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+            if (err != std::errc{} || end != text.data() + text.size() ||
+                parsed < 1.0 || parsed > 32.0) {
+                usage_error("--rope-scaling-factor must be in [1.0, 32.0]");
+            }
+            out.rope_scaling_factor = static_cast<float>(parsed);
+        } else if (option == "--rope-scaling-original-context") {
+            out.rope_scaling_original_context = parse_integer<std::uint32_t>(
+                value("--rope-scaling-original-context"), "rope-scaling-original-context");
         } else if (option == "--log-level") {
             out.log_level = ninfer::product::parse_log_level(value("--log-level"));
         } else {
@@ -218,6 +230,8 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
     engine_options.device           = options.device;
     engine_options.max_context      = options.context;
     engine_options.kv_cache         = options.kv;
+    engine_options.rope_scaling_factor          = options.rope_scaling_factor;
+    engine_options.rope_scaling_original_context = options.rope_scaling_original_context;
     engine_options.startup_observer = startup_log.observer();
     ninfer::Engine engine(std::move(engine_options));
     const ninfer::LoadSummary load = engine.load_summary();

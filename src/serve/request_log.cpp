@@ -478,6 +478,8 @@ std::string format_server_start_json(
               product::speculative_backend_name(engine_options.speculative.backend)},
              {"speculative_draft_window", engine_options.speculative.draft_tokens},
              {"proposal_head", proposal_head_name(engine_options.speculative.proposal_head)},
+             {"rope_scaling_factor", engine_options.rope_scaling_factor},
+             {"rope_scaling_original_context", engine_options.rope_scaling_original_context},
              {"context_cost", Json{{"transfer_source", ninfer::context_cost_preset_source_name(
                                                            context_cost.transfer_source)},
                                    {"prefill_source", ninfer::context_cost_preset_source_name(

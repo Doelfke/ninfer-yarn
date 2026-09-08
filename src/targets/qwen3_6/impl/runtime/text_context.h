@@ -181,6 +181,11 @@ public:
 
     void set_mtp_proposal_extent(std::uint32_t extent) noexcept { mtp_proposal_extent_ = extent; }
 
+    void set_rope_scaling(float factor, std::uint32_t original_context) noexcept {
+        rope_scaling_factor_              = factor;
+        rope_scaling_original_context_    = original_context;
+    }
+
     void set_linear_state_slots(std::int32_t source_slot, std::int32_t destination_slot);
     void set_gdn_state_action(GdnStateAction action, const GdnReplayRecords* replay_records);
 
@@ -315,6 +320,8 @@ private:
     std::int32_t active_sequence_batch_                                            = 0;
     std::int32_t active_sequence_width_                                            = 0;
     std::int32_t rope_delta_                                                       = 0;
+    float rope_scaling_factor_                                                  = 1.0F;
+    std::uint32_t rope_scaling_original_context_                               = 262144;
     std::int32_t linear_state_source_slot_                                         = 0;
     std::int32_t linear_state_destination_slot_                                    = 0;
     GdnStateAction gdn_state_action_          = GdnStateAction::UpdateInPlace;

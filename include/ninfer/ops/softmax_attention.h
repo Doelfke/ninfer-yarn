@@ -13,7 +13,7 @@
 
 namespace ninfer::ops {
 
-inline constexpr std::uint32_t kCausalAttentionMaximumVisibleKeys = 262144;
+inline constexpr std::uint32_t kCausalAttentionMaximumVisibleKeys = 8388608; // 8M (supports 96GB+ GPUs at c=1)
 
 struct CausalAttentionExecutionEnvelope {
     std::uint32_t min_visible_keys = 0;
