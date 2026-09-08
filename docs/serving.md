@@ -795,6 +795,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-long-anchors-per-continuation N` | private long-anchor limit per continuation | `2` |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
+| `--tolerant-tool-calls` | recover complete Qwen calls with malformed wrapper/suffix output | off |
 | `--cors` | permissive browser CORS headers | off |
 | `--temperature F` | process-level temperature override | unset |
 | `--top-p F` | process-level top-p override | unset |

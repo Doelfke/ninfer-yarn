@@ -62,9 +62,11 @@ struct ParsedToolCallOutput {
 [[nodiscard]] std::shared_ptr<const ToolCallOutputContract>
 build_tool_call_output_contract(std::span<const std::string> tool_jsons, bool enabled);
 
+// Parse Qwen's XML-like tool-call format. In tolerant mode, a complete function
+// call is recovered even when the model adds wrapper garbage or suffix text.
 [[nodiscard]] ParsedToolCallOutput
 parse_qwen_tool_call_output(const std::string& text, std::size_t max_tool_name_length,
-                            const ToolCallOutputContract& contract);
+                            const ToolCallOutputContract& contract, bool tolerant = false);
 
 // Incrementally publishes bytes that are provably outside a possible terminal Qwen tool-call
 // suffix. At terminal time, valid calls are retained structurally; malformed output is restored
@@ -78,7 +80,7 @@ public:
     };
 
     ToolCallOutputDecoder(std::shared_ptr<const ToolCallOutputContract> contract,
-                          std::size_t max_tool_name_length);
+                          std::size_t max_tool_name_length, bool tolerant = false);
 
     [[nodiscard]] std::string feed(std::string_view text);
     [[nodiscard]] Terminal finish();
@@ -89,6 +91,7 @@ private:
     std::string tool_region_;
     std::size_t marker_prefix_bytes_  = 0;
     std::size_t max_tool_name_length_ = 0;
+    bool tolerant_                    = false;
     bool saw_tool_marker_             = false;
     bool finished_                    = false;
 };

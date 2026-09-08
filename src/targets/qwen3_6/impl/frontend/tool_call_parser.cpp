@@ -409,9 +409,9 @@ NormalizedParameter normalize_parameter(std::string_view encoded_value,
 
 class QwenToolRegionParser {
 public:
-    QwenToolRegionParser(std::string_view text, std::size_t max_name_length,
-                         const Contract& contract)
-        : text_(text), max_name_length_(max_name_length), contract_(contract) {}
+    QwenToolRegionParser(std::string_view text, std::size_t max_name_length, const Contract& contract,
+                         bool tolerant)
+        : text_(text), max_name_length_(max_name_length), contract_(contract), tolerant_(tolerant) {}
 
     FallbackReason parse(std::vector<RawToolCall>& calls) const {
         std::size_t pos = 0;
@@ -421,13 +421,21 @@ public:
                 return calls.empty() ? FallbackReason::MalformedStructure : FallbackReason::None;
             }
             if (!starts_with_at(text_, pos, kToolOpen)) {
+                // In tolerant mode a trailing suffix after one or more complete calls is
+                // discarded rather than failing the whole output.
+                if (tolerant_ && !calls.empty()) { return FallbackReason::TruncatedTail; }
                 return calls.empty() ? FallbackReason::MalformedStructure
                                      : FallbackReason::TrailingContent;
             }
 
             RawToolCall call;
             const FallbackReason failure = parse_tool_call(pos, call);
-            if (failure != FallbackReason::None) { return failure; }
+            if (failure != FallbackReason::None) {
+                // Once a complete call has been recovered, do not discard it just because the
+                // model then added a malformed second call.
+                if (tolerant_ && !calls.empty()) { return FallbackReason::TruncatedTail; }
+                return failure;
+            }
             calls.push_back(std::move(call));
         }
     }
@@ -445,7 +453,11 @@ private:
         const FallbackReason failure = parse_function(pos, call);
         if (failure != FallbackReason::None) { return failure; }
         skip_format_whitespace(text_, pos);
-        return consume(pos, kToolClose) ? FallbackReason::None : FallbackReason::MalformedStructure;
+        // Qwen occasionally emits explanatory text after a complete call. Only allow that
+        // trailing suffix in explicit tolerant mode; the strict parser retains its
+        // all-or-nothing behavior.
+        if (consume(pos, kToolClose)) { return FallbackReason::None; }
+        return tolerant_ ? FallbackReason::TruncatedTail : FallbackReason::MalformedStructure;
     }
 
     FallbackReason parse_function(std::size_t& pos, RawToolCall& call) const {
@@ -538,6 +550,7 @@ private:
     std::string_view text_;
     std::size_t max_name_length_;
     const Contract& contract_;
+    bool tolerant_ = false;
 };
 
 GeneratedToolCall normalize_raw_tool_call(const RawToolCall& raw, const Contract& contract,
@@ -597,7 +610,8 @@ build_tool_call_output_contract(std::span<const std::string> tool_jsons, bool en
 
 ParsedToolCallOutput parse_qwen_tool_call_output(const std::string& text,
                                                  std::size_t max_tool_name_length,
-                                                 const ToolCallOutputContract& contract) {
+                                                 const ToolCallOutputContract& contract,
+                                                 bool tolerant) {
     const std::size_t first = text.find(kToolOpen);
     if (first == std::string::npos) { return fallback(text); }
 
@@ -607,9 +621,12 @@ ParsedToolCallOutput parse_qwen_tool_call_output(const std::string& text,
 
     std::vector<RawToolCall> raw_calls;
     const std::string_view tool_region = std::string_view(text).substr(first);
-    const QwenToolRegionParser parser(tool_region, max_tool_name_length, contract);
+    const QwenToolRegionParser parser(tool_region, max_tool_name_length, contract, tolerant);
     const FallbackReason failure = parser.parse(raw_calls);
-    if (failure != FallbackReason::None) {
+    if (failure == FallbackReason::TruncatedTail) {
+        // A truncated tail after a complete call was discarded; the recovered calls stand.
+        out.diagnostics.fallback_reason = failure;
+    } else if (failure != FallbackReason::None) {
         out.diagnostics.fallback_reason = failure;
         return fallback(text, out.diagnostics);
     }
@@ -625,8 +642,9 @@ ParsedToolCallOutput parse_qwen_tool_call_output(const std::string& text,
 }
 
 ToolCallOutputDecoder::ToolCallOutputDecoder(std::shared_ptr<const ToolCallOutputContract> contract,
-                                             std::size_t max_tool_name_length)
-    : contract_(std::move(contract)), max_tool_name_length_(max_tool_name_length) {}
+                                             std::size_t max_tool_name_length, bool tolerant)
+    : contract_(std::move(contract)), max_tool_name_length_(max_tool_name_length),
+      tolerant_(tolerant) {}
 
 std::string ToolCallOutputDecoder::feed(std::string_view text) {
     if (finished_) { throw std::logic_error("tool-call output decoder is already finished"); }
@@ -679,7 +697,7 @@ ToolCallOutputDecoder::Terminal ToolCallOutputDecoder::finish() {
     if (!contract_) { return {}; }
 
     ParsedToolCallOutput parsed =
-        parse_qwen_tool_call_output(tool_region_, max_tool_name_length_, *contract_);
+        parse_qwen_tool_call_output(tool_region_, max_tool_name_length_, *contract_, tolerant_);
     if (saw_tool_marker_ && parsed.is_tool_call_response) {
         trailing_whitespace_.clear();
         tool_region_.clear();

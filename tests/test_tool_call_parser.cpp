@@ -733,6 +733,62 @@ int test_incremental_embedded_parameter_markup() {
     return failures;
 }
 
+int test_tolerant_recovery() {
+    using Reason = ninfer::ToolCallParseFallbackReason;
+    int failures = 0;
+
+    // A trailing suffix after a complete call is recovered in tolerant mode and flagged as a
+    // truncated tail, but the same text falls back to ordinary text in strict mode.
+    const std::string suffixed = tool_call("configure", {{"value", "x"}}) + "\nextra answer";
+
+    const auto tolerant = fi::parse_qwen_tool_call_output(
+        suffixed, 64, contract_for("configure", Json{{"value", Json{{"type", "string"}}}}), true);
+    failures += check(tolerant.is_tool_call_response, "tolerant suffix was not recovered");
+    failures += check(tolerant.tool_calls.size() == 1 && tolerant.tool_calls.front().name == "configure",
+                      "tolerant suffix lost the recovered call");
+    failures += check(tolerant.diagnostics.fallback_reason == Reason::TruncatedTail,
+                      "tolerant suffix was not flagged as a truncated tail");
+
+    const auto strict =
+        fi::parse_qwen_tool_call_output(suffixed, 64, contract_for("configure", Json{{"value", Json{{"type", "string"}}}}));
+    failures += check(!strict.is_tool_call_response, "strict suffix was recovered instead of text");
+    failures += check(strict.tool_calls.empty(), "strict suffix retained the recovered call");
+    failures += check(strict.diagnostics.fallback_reason == Reason::TrailingContent,
+                      "strict suffix was not flagged as trailing content");
+
+    // A malformed second call must not discard an already-recovered first call in tolerant mode.
+    const std::string two = tool_call("first", {{"value", "a"}}) + "\n" +
+                            "<tool_call>\n<function=broken>";
+    const auto tolerant_two = fi::parse_qwen_tool_call_output(two, 64, kLegacyContract, true);
+    failures += check(tolerant_two.is_tool_call_response, "tolerant multi-call was not recovered");
+    failures += check(tolerant_two.tool_calls.size() == 1 && tolerant_two.tool_calls.front().name == "first",
+                      "tolerant multi-call kept the malformed second call");
+    failures += check(tolerant_two.diagnostics.fallback_reason == Reason::TruncatedTail,
+                      "tolerant multi-call was not flagged as a truncated tail");
+
+    // The same malformed second call fails entirely in strict mode.
+    const auto strict_two = fi::parse_qwen_tool_call_output(two, 64, kLegacyContract);
+    failures += check(!strict_two.is_tool_call_response, "strict multi-call kept the recovered call");
+
+    // Incremental decoding honors the tolerant flag and commits the recovered call.
+    const auto contract =
+        output_contract_for("configure", Json{{"value", Json{{"type", "string"}}}});
+    fi::ToolCallOutputDecoder decoder(contract, 64, /*tolerant*/ true);
+    std::string visible;
+    constexpr std::size_t kChunk = 7;
+    for (std::size_t offset = 0; offset < suffixed.size(); offset += kChunk) {
+        visible += decoder.feed(std::string_view(suffixed).substr(offset, kChunk));
+    }
+    auto terminal = decoder.finish();
+    failures += check(visible.empty() && terminal.content.empty(),
+                      "tolerant increment leaked recovered bytes to visible content");
+    failures += check(terminal.tool_calls.size() == 1,
+                      "tolerant increment did not commit the recovered call");
+    failures += check(terminal.diagnostics.fallback_reason == Reason::TruncatedTail,
+                      "tolerant increment lost the truncated-tail diagnostic");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -756,6 +812,7 @@ int main() {
     failures += test_incremental_valid_and_boolean();
     failures += test_incremental_fallback_preserves_bytes();
     failures += test_incremental_embedded_parameter_markup();
+    failures += test_tolerant_recovery();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }
