@@ -169,6 +169,8 @@ struct EngineOptions {
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;
     StartupObserver startup_observer;
+    float rope_scaling_factor              = 1.0f;
+    std::uint32_t rope_scaling_original_context = 262144;
 };
 
 enum class SamplingMode : std::uint8_t {

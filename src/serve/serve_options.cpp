@@ -201,83 +201,16 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 throw std::invalid_argument("--media-live-mib is out of range");
             }
             options.media_live_bytes = static_cast<std::size_t>(mib << 20);
-        } else if (arg == "--media-preprocess-threads") {
-            const int threads = parse_nonnegative_int(require_value("--media-preprocess-threads"),
-                                                      "media-preprocess-threads");
-            if (threads > 64) {
-                throw std::invalid_argument("--media-preprocess-threads must be in [0,64]");
-            }
-            options.media_preprocess_threads = static_cast<std::uint32_t>(threads);
-        } else if (arg == "--device-state-slots") {
-            options.context_cache.device_state_slots = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--device-state-slots"), "device-state-slots"));
-            context_capacity_explicit = true;
-        } else if (arg == "--host-state-slots") {
-            options.context_cache.host_state_slots = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--host-state-slots"), "host-state-slots"));
-            context_capacity_explicit = true;
-        } else if (arg == "--host-kv-mib") {
-            const std::uint64_t mib = parse_u64(require_value("--host-kv-mib"), "host-kv-mib");
-            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
-                throw std::invalid_argument("--host-kv-mib is out of range");
-            }
-            options.context_cache.host_kv_capacity_bytes = static_cast<std::size_t>(mib << 20);
-            context_capacity_explicit                    = true;
-        } else if (arg == "--max-private-continuations") {
-            options.context_cache.max_private_continuations =
-                static_cast<std::uint32_t>(parse_nonnegative_int(
-                    require_value("--max-private-continuations"), "max-private-continuations"));
-            context_capacity_explicit = true;
-        } else if (arg == "--max-shared-prefixes") {
-            options.context_cache.max_shared_prefixes =
-                static_cast<std::uint32_t>(parse_nonnegative_int(
-                    require_value("--max-shared-prefixes"), "max-shared-prefixes"));
-            context_capacity_explicit = true;
-        } else if (arg == "--max-long-anchors-per-continuation") {
-            options.context_cache.max_long_anchors_per_continuation = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--max-long-anchors-per-continuation"),
-                                      "max-long-anchors-per-continuation"));
-            context_capacity_explicit = true;
-        } else if (arg == "--request-log-jsonl") {
-            options.request_log_jsonl = require_value("--request-log-jsonl");
-            if (options.request_log_jsonl.empty()) {
-                throw std::invalid_argument("--request-log-jsonl must not be empty");
-            }
-        } else if (arg == "--response-store-max-records") {
-            const int records = parse_nonnegative_int(require_value("--response-store-max-records"),
-                                                      "response-store-max-records");
-            if (records == 0) {
-                throw std::invalid_argument("--response-store-max-records must be positive");
-            }
-            options.response_store_max_records = static_cast<std::size_t>(records);
-        } else if (arg == "--response-store-max-mib") {
-            const std::uint64_t mib =
-                parse_u64(require_value("--response-store-max-mib"), "response-store-max-mib");
-            if (mib == 0 || mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
-                throw std::invalid_argument("--response-store-max-mib is out of range");
-            }
-            options.response_store_max_bytes = static_cast<std::size_t>(mib << 20);
-        } else if (arg == "--device") {
-            options.device = parse_nonnegative_int(require_value("--device"), "device");
-        } else if (arg == "--kv-dtype") {
-            options.kv_cache = parse_kv_dtype(require_value("--kv-dtype"));
-        } else if (arg == "--spec") {
-            options.speculative.backend =
-                product::parse_speculative_backend(require_value("--spec"));
-        } else if (arg == "--draft-tokens") {
-            options.speculative.draft_tokens = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--draft-tokens"), "draft-tokens"));
+        } else if (arg == "--rope-scaling-factor") {
+            options.rope_scaling_factor =
+                parse_float_in(require_value("--rope-scaling-factor"), "rope-scaling-factor", 1.0f, 32.0f);
+        } else if (arg == "--rope-scaling-original-context") {
+            options.rope_scaling_original_context =
+                static_cast<std::uint32_t>(parse_u64(require_value("--rope-scaling-original-context"), "rope-scaling-original-context"));
         } else if (arg == "--default-max-tokens") {
-            options.default_max_tokens =
-                parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");
-            default_max_tokens_explicit = true;
+            options.default_max_tokens = static_cast<std::uint32_t>(parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens"));
         } else if (arg == "--default-thinking-budget") {
-            const std::uint64_t budget =
-                parse_u64(require_value("--default-thinking-budget"), "default-thinking-budget");
-            if (budget == 0 || budget > std::numeric_limits<std::uint32_t>::max()) {
-                throw std::invalid_argument("--default-thinking-budget is out of range");
-            }
-            options.default_thinking_budget = static_cast<std::uint32_t>(budget);
+            options.default_thinking_budget = static_cast<std::uint32_t>(parse_nonnegative_int(require_value("--default-thinking-budget"), "default-thinking-budget"));
         } else if (arg == "--vision") {
             options.enable_vision = true;
         } else if (arg == "--no-cuda-graph") {

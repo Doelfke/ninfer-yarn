@@ -48,6 +48,8 @@ struct Options {
     std::uint32_t stride                = 2048;
     int device                          = 0;
     ninfer::KvCacheStorage kv           = ninfer::KvCacheStorage::Fp8E4M3Row256;
+    float rope_scaling_factor              = 1.0f;
+    std::uint32_t rope_scaling_original_context = 262144;
     bool quick                          = false;
     ninfer::product::LogLevel log_level = ninfer::product::LogLevel::Info;
 };
@@ -57,6 +59,7 @@ std::string usage_text() {
            "(--corpus <manifest.json> [--quick] | --text <utf8-file>)\n"
            "       [--context N] [--stride N] [--device N]\n"
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--output <directory>]\n"
+           "       [--rope-scaling-factor F] [--rope-scaling-original-context N]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n";
 }
 
