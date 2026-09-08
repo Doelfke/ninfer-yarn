@@ -430,13 +430,24 @@ public:
 
             RawToolCall call;
             const FallbackReason failure = parse_tool_call(pos, call);
-            if (failure != FallbackReason::None) {
-                // Once a complete call has been recovered, do not discard it just because the
-                // model then added a malformed second call.
-                if (tolerant_ && !calls.empty()) { return FallbackReason::TruncatedTail; }
-                return failure;
+            if (failure == FallbackReason::None) {
+                calls.push_back(std::move(call));
+                continue;
             }
-            calls.push_back(std::move(call));
+            // Tolerant mode only: once at least one complete call has been recovered, a trailing
+            // malformed suffix or a malformed second call is discarded rather than failing the
+            // whole output.
+            if (tolerant_ && !calls.empty()) { return FallbackReason::TruncatedTail; }
+            // Tolerant mode only: recover a single truncated final call. In tolerant mode
+            // TruncatedTail here means the call's name and every parsed parameter are complete,
+            // but its closing tag was cut off (or trailing content follows): keep the recovered
+            // call rather than demoting it to raw text. The strict parser retains its
+            // all-or-nothing behavior because it never produces this reason.
+            if (failure == FallbackReason::TruncatedTail && calls.empty()) {
+                calls.push_back(std::move(call));
+                return FallbackReason::TruncatedTail;
+            }
+            return failure;
         }
     }
 
@@ -447,16 +458,24 @@ private:
         return true;
     }
 
+    // True when nothing but trailing whitespace remains after `pos` in the tool region.
+    bool at_region_end(std::size_t pos) const {
+        std::size_t at = pos;
+        skip_format_whitespace(text_, at);
+        return at == text_.size();
+    }
+
     FallbackReason parse_tool_call(std::size_t& pos, RawToolCall& call) const {
         if (!consume(pos, kToolOpen)) { return FallbackReason::MalformedStructure; }
         skip_format_whitespace(text_, pos);
         const FallbackReason failure = parse_function(pos, call);
         if (failure != FallbackReason::None) { return failure; }
         skip_format_whitespace(text_, pos);
-        // Qwen occasionally emits explanatory text after a complete call. Only allow that
-        // trailing suffix in explicit tolerant mode; the strict parser retains its
-        // all-or-nothing behavior.
         if (consume(pos, kToolClose)) { return FallbackReason::None; }
+        // In explicit tolerant mode a complete call may be followed by explanatory text, or the
+        // model may have stopped at the very end of its budget before the closing tag. Both are
+        // resolved by parse(): trailing content after an emptied region is a truncation. The
+        // strict parser treats a missing close tag as a hard structural failure.
         return tolerant_ ? FallbackReason::TruncatedTail : FallbackReason::MalformedStructure;
     }
 
@@ -480,6 +499,11 @@ private:
         for (;;) {
             skip_format_whitespace(text_, pos);
             if (consume(pos, kFunctionClose)) { return FallbackReason::None; }
+            // Tolerant mode only: the region is exhausted after the last complete parameter, so a
+            // missing </function> is a truncation, not a malformed structure. parse() resolves
+            // the terminal flag and retains the recovered parameters. The strict parser still
+            // requires the closing tag.
+            if (tolerant_ && at_region_end(pos)) { return FallbackReason::TruncatedTail; }
             const FallbackReason failure = parse_parameter(pos, call);
             if (failure != FallbackReason::None) { return failure; }
         }

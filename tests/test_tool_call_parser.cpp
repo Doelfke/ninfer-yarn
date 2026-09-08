@@ -789,6 +789,75 @@ int test_tolerant_recovery() {
     return failures;
 }
 
+int test_tolerant_truncated_final_call() {
+    using Reason = ninfer::ToolCallParseFallbackReason;
+    using Contract = fi::ToolCallOutputContract;
+    const auto contract =
+        output_contract_for("delete_file", Json{{"filePath", Json{{"type", "string"}}}});
+
+    // The model produced a complete parameter but the closing tags were truncated before
+    // the response finished. Tolerant mode recovers the complete call; strict mode rejects.
+    const std::string truncated_tool_close = "Now let me verify.\n"
+                                             "<tool_call>\n"
+                                             "<function=delete_file>\n"
+                                             "<parameter=filePath>\n"
+                                             "/tmp/out.js\n"
+                                             "</parameter>\n"
+                                             "</function>";
+    const std::string truncated_function_close = "Now let me verify.\n"
+                                                 "<tool_call>\n"
+                                                 "<function=delete_file>\n"
+                                                 "<parameter=filePath>\n"
+                                                 "/tmp/out.js\n"
+                                                 "</parameter>";
+
+    const std::vector<std::pair<const char*, std::string>> cases = {
+        {"missing </tool_call>", truncated_tool_close},
+        {"missing </function> and </tool_call>", truncated_function_close}};
+
+    int failures = 0;
+    for (const auto& [label, text] : cases) {
+        const auto parsed = fi::parse_qwen_tool_call_output(text, 64, *contract, /*tolerant*/ true);
+        failures += check(parsed.is_tool_call_response,
+                          std::string("tolerant did not recover ") + label);
+        failures += check(parsed.tool_calls.size() == 1,
+                          std::string("tolerant recovered wrong call count for ") + label);
+        if (parsed.tool_calls.size() == 1) {
+            failures += check(parsed.tool_calls.front().name == "delete_file",
+                              std::string("tolerant lost call name for ") + label);
+            const Json arguments = Json::parse(parsed.tool_calls.front().arguments_json);
+            failures += check(arguments == Json{{"filePath", "/tmp/out.js"}},
+                              std::string("tolerant lost arguments for ") + label);
+        }
+        failures +=
+            check(parsed.diagnostics.fallback_reason == Reason::TruncatedTail,
+                  std::string("tolerant did not flag ") + label + " as truncated tail");
+
+        const auto strict = fi::parse_qwen_tool_call_output(text, 64, *contract);
+        failures += check(!strict.is_tool_call_response,
+                          std::string("strict recovered a truncated final call: ") + label);
+        failures += check(strict.tool_calls.empty(),
+                          std::string("strict retained a truncated final call: ") + label);
+    }
+
+    // A call with a trailing non-whitespace suffix after an unterminated close is existing
+    // tolerant recovery, verified here against the strict parser to confirm the gating.
+    const std::string trailing_after_close = tool_call("delete_file", {{"filePath", "/tmp/out.js"}}) +
+                                             "\nI should now continue.";
+    const auto tolerant_suffix =
+        fi::parse_qwen_tool_call_output(trailing_after_close, 64, *contract, /*tolerant*/ true);
+    failures += check(tolerant_suffix.is_tool_call_response &&
+                          tolerant_suffix.tool_calls.size() == 1 &&
+                          tolerant_suffix.diagnostics.fallback_reason == Reason::TruncatedTail,
+                      "tolerant trailing-content recovery regressed");
+    const auto strict_suffix = fi::parse_qwen_tool_call_output(trailing_after_close, 64, *contract);
+    failures += check(!strict_suffix.is_tool_call_response &&
+                          strict_suffix.diagnostics.fallback_reason == Reason::TrailingContent,
+                      "strict trailing-content rejection regressed");
+
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -813,6 +882,7 @@ int main() {
     failures += test_incremental_fallback_preserves_bytes();
     failures += test_incremental_embedded_parameter_markup();
     failures += test_tolerant_recovery();
+    failures += test_tolerant_truncated_final_call();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }
