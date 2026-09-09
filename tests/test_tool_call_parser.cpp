@@ -858,6 +858,44 @@ int test_tolerant_truncated_final_call() {
     return failures;
 }
 
+int test_tolerant_missing_function_close_bracket() {
+    using Reason = ninfer::ToolCallParseFallbackReason;
+    const auto contract =
+        output_contract_for("memory", Json{{"command", Json{{"type", "string"}}},
+                                            {"path",    Json{{"type", "string"}}}});
+
+    const std::string text =
+        "Let me check my memory file first.\n"
+        "<tool_call>\n"
+        "<function=memory\n"
+        "<parameter=command>\nstr_replace\n</parameter>\n"
+        "<parameter=path>\n/memories/repo/notes.md\n</parameter>\n"
+        "</function>\n"
+        "</tool_call>";
+
+    int failures = 0;
+    const auto tolerant = fi::parse_qwen_tool_call_output(text, 64, *contract, /*tolerant*/ true);
+    failures += check(tolerant.is_tool_call_response,
+                      "tolerant mode did not recover missing '>' after function name");
+    failures += check(tolerant.tool_calls.size() == 1, "tolerant mode recovered wrong call count");
+    if (tolerant.tool_calls.size() == 1) {
+        const auto& call = tolerant.tool_calls.front();
+        failures += check(call.name == "memory", "recovered call lost the function name");
+        const Json args = Json::parse(call.arguments_json);
+        failures += check(args.at("command") == "str_replace", "recovered call lost command arg");
+        failures +=
+            check(args.at("path") == "/memories/repo/notes.md", "recovered call lost path arg");
+    }
+    failures += check(tolerant.diagnostics.fallback_reason == Reason::None,
+                      "tolerant recovery of missing '>' reported a spurious fallback reason");
+
+    const auto strict = fi::parse_qwen_tool_call_output(text, 64, *contract);
+    failures += check(!strict.is_tool_call_response,
+                      "strict mode recovered a call with a missing '>' after the function name");
+    failures += check(strict.tool_calls.empty(), "strict mode retained an invalid-tool-name call");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -883,6 +921,7 @@ int main() {
     failures += test_incremental_embedded_parameter_markup();
     failures += test_tolerant_recovery();
     failures += test_tolerant_truncated_final_call();
+    failures += test_tolerant_missing_function_close_bracket();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

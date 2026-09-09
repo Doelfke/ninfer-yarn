@@ -482,7 +482,29 @@ private:
     FallbackReason parse_function(std::size_t& pos, RawToolCall& call) const {
         if (!consume(pos, kFunctionOpen)) { return FallbackReason::MalformedStructure; }
         const std::size_t name_begin = pos;
-        const std::size_t name_end   = text_.find('>', name_begin);
+        std::size_t name_end         = text_.find('>', name_begin);
+        bool ws_boundary             = false;
+        // Tolerant mode: the model sometimes drops the '>' after the function name
+        // (e.g. "<function=memory\n<parameter=...>"). Recover by scanning the identifier
+        // run and accepting it when format whitespace separates it from the next '<'
+        // or end of region.
+        if (tolerant_) {
+            std::size_t scan = name_begin;
+            while (scan < text_.size() && scan - name_begin < max_name_length_) {
+                const char byte = text_[scan];
+                if (!is_ascii_alphanumeric(byte) && byte != '_' && byte != '-') { break; }
+                ++scan;
+            }
+            if (scan > name_begin && scan < text_.size() && is_format_whitespace(text_[scan]) &&
+                (name_end == std::string_view::npos || scan < name_end)) {
+                std::size_t after = scan;
+                while (after < text_.size() && is_format_whitespace(text_[after])) { ++after; }
+                if (after >= text_.size() || text_[after] == '<') {
+                    name_end    = scan;
+                    ws_boundary = true;
+                }
+            }
+        }
         if (name_end == std::string_view::npos || name_end == name_begin) {
             return FallbackReason::InvalidToolName;
         }
@@ -494,7 +516,7 @@ private:
             find_tool_contract(contract_, call.name) == nullptr) {
             return FallbackReason::UndeclaredTool;
         }
-        pos = name_end + 1;
+        pos = ws_boundary ? name_end : name_end + 1;
 
         for (;;) {
             skip_format_whitespace(text_, pos);
