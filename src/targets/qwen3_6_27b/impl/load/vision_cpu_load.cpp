@@ -14,12 +14,25 @@ namespace {
 
 namespace qc = qwen3_6::vision_cpu;
 
+// Map artifact::NumericFormat to the QType int consumed by dequant_row_split_lowbit.
+// NumericFormat: Q4=3, Q5=4, Q6=5, W8=6;  QType: Q4=0, Q5=1, Q6=2, W8=3.
+constexpr std::int32_t to_qtype(artifact::NumericFormat f) {
+    switch (f) {
+        case artifact::NumericFormat::Q4G64_F16S: return 0;
+        case artifact::NumericFormat::Q5G64_F16S: return 1;
+        case artifact::NumericFormat::Q6G64_F16S: return 2;
+        case artifact::NumericFormat::W8G32_F16S: return 3;
+        default:
+            throw std::invalid_argument("vision_cpu: unsupported row-split numeric format");
+    }
+}
+
 // Dequantize a row-split grouped-quant payload to logical FP32 [n, k] row-major.
 inline std::vector<float> quant_w(artifact::Binder& binder, artifact::ObjectHandle h, int n, int k,
                                   artifact::NumericFormat format) {
     const auto span = binder.payload(h);
     const std::uint8_t* bytes = reinterpret_cast<const std::uint8_t*>(span.data.data());
-    return qc::dequant_row_split_lowbit(bytes, n, k, static_cast<std::int32_t>(format));
+    return qc::dequant_row_split_lowbit(bytes, n, k, to_qtype(format));
 }
 
 // Convert a contiguous BF16 payload (row-major, `elements` half-words) to FP32.
