@@ -285,6 +285,10 @@ RequestBasePlan ProgramImplCore::plan_request(const PreparedPromptData& prompt,
         if (!workspace_plan.vision) {
             throw std::logic_error("Vision prompt has no startup workspace plan");
         }
+        // --vision-cpu: the device encode scratch is never allocated (encode_peak_bytes is 0)
+        // because the ViT runs on CPU (vision_context_impl.h); the only device extent is the
+        // embedding handoff, which `merged_count <= max_merged_tokens` bounds below.
+        const bool vision_offload = model.features.vision_cpu_offload;
         auto vision =
             std::make_shared<qwen3_6::VisionControlPlan>(qwen3_6::plan_vision_control(prompt));
         std::uint32_t previous_end = 0;
@@ -298,9 +302,10 @@ RequestBasePlan ProgramImplCore::plan_request(const PreparedPromptData& prompt,
                 throw std::invalid_argument("vision item consumer spans overlap");
             }
             if (item.merged_count > workspace_plan.vision->max_merged_tokens ||
-                schedule::VisionContext::workspace_bytes(prompt.vision_items[index].patch_count,
-                                                         item.merged_count) >
-                    workspace_plan.vision->encode_peak_bytes) {
+                (!vision_offload &&
+                 schedule::VisionContext::workspace_bytes(prompt.vision_items[index].patch_count,
+                                                          item.merged_count) >
+                     workspace_plan.vision->encode_peak_bytes)) {
                 throw std::invalid_argument("vision item exceeds the Program workspace envelope");
             }
             previous_end = item.token_end;
