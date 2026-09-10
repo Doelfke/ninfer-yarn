@@ -8,8 +8,11 @@ client = OpenAI(
 
 def build_prompt(target_tokens: int, needle: str) -> str:
     # ~4 chars/token average; use a realistic corpus if you have one
-    filler = "The quick brown fox jumps over the lazy dog. " * (target_tokens // 20 * 3)
-    body = filler[:target_tokens]
+    chars_per_token = 4
+    target_chars = target_tokens * chars_per_token
+    unit = "The quick brown fox jumps over the lazy dog. "
+    filler = unit * (target_chars // len(unit) + 1)
+    body = filler[:target_chars]
     pos = int(len(body) * 0.9)
     return body[:pos] + f" The secret phrase is: {needle}." + body[pos:]
 
@@ -30,7 +33,7 @@ def ask(prompt: str) -> str:
     return (content or "").strip()
 
 # 3 points: well inside, near boundary, well into extended region
-for depth in [50000, 100_000, 200_000, 262_000, 380_000]:
+for depth in [400_000, 500_000, 600_000, 700_000, 800_000, 900_000, 1_000_000]:
     needle = uuid.uuid4().hex
     answer = ask(build_prompt(depth, needle))
     ok = "✓" if needle in answer else "✗"

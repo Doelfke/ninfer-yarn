@@ -40,7 +40,20 @@ std::int32_t causal_small_t_split_upper_bound(std::int32_t window) {
     if (window > 8198) { include_tier(16390, 256 / Geometry::SmallTSplitScale); }
     if (window > 16390) { include_tier(window, 480 / Geometry::SmallTSplitScale); }
 
-    return (splits < Geometry::SmallTMaximumSplits) ? splits : Geometry::SmallTMaximumSplits;
+    splits = (splits < Geometry::SmallTMaximumSplits) ? splits : Geometry::SmallTMaximumSplits;
+    if constexpr (Geometry::SmallTSplitScale == 1) {
+        // Page-safety floor (must mirror causal_small_t_default_splits in small_t.cuh). Each
+        // split stages up to 64 physical-page IDs into __shared__ physical_pages_s[64] and
+        // indexes it by page offset, so keys/split must stay <= 3968 (62 pages, the
+        // conservative bound that leaves 2 pages for tile rounding/alignment). The efficiency
+        // cap above under-provisions splits at large windows; floor to page_limit so those
+        // windows split enough keys, up to the 256-split ceiling of the split reducer.
+        constexpr std::int32_t kSplitsCeiling = 256;
+        const std::int32_t page_limit         = div_up(window, 3968);
+        splits                                = (splits > page_limit) ? splits : page_limit;
+        return (splits < kSplitsCeiling) ? splits : kSplitsCeiling;
+    }
+    return splits;
 }
 
 template <typename Geometry>

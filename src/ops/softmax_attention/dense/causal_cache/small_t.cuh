@@ -90,7 +90,17 @@ __device__ __forceinline__ int causal_small_t_default_splits(int window) {
     constexpr int kMinSplits = 4 * Geometry::SmallTSplitScale;
     int splits               = div_up(window, target_keys_per_split);
     splits                   = splits > kMinSplits ? splits : kMinSplits;
-    return splits < Geometry::SmallTMaximumSplits ? splits : Geometry::SmallTMaximumSplits;
+    splits                   = splits < Geometry::SmallTMaximumSplits ? splits : Geometry::SmallTMaximumSplits;
+    if constexpr (Geometry::SmallTSplitScale == 1) {
+        // Page-safety floor (must mirror causal_small_t_split_upper_bound in small_t.cu). Keep
+        // keys/split <= 3968 so each split's page span fits __shared__ physical_pages_s[64],
+        // up to the 256-split ceiling of the split reducer.
+        constexpr int kSplitsCeiling = 256;
+        const int page_limit         = div_up(window, 3968);
+        splits                       = splits > page_limit ? splits : page_limit;
+        return splits < kSplitsCeiling ? splits : kSplitsCeiling;
+    }
+    return splits;
 }
 
 template <typename Geometry, bool Int8>
@@ -122,10 +132,12 @@ __device__ __forceinline__ int causal_small_t_active_splits(int window, int laun
 template <typename Geometry>
 __device__ __forceinline__ int
 causal_small_t_quantized_active_splits(int window, int launch_capacity, int tokens) {
-    int splits = causal_small_t_default_splits<Geometry>(window);
-    if constexpr (Geometry::SmallTSplitScale == 1) {
-        if (tokens == 1 && window > 8198) { splits = Geometry::SmallTMaximumSplits; }
-    }
+    // causal_small_t_default_splits already applies the page-safety floor and the
+    // 256-split reducer ceiling for the H24 geometry, so it must not be clamped back here.
+    // The old `tokens == 1` fallback to SmallTMaximumSplits (85) under-provisioned splits
+    // at large windows and read out of bounds in __shared__ physical_pages_s[64].
+    (void)tokens;
+    const int splits = causal_small_t_default_splits<Geometry>(window);
     return splits < launch_capacity ? splits : launch_capacity;
 }
 
