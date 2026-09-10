@@ -785,7 +785,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
-| `--vision-cpu` | enable media input with the ViT encoder running on CPU; the 27 backbone layers and merger are dequantized once at load into host DRAM (not the device arena), encoded on host per item, and handed to the device with a single embedding copy. Slower Vision encode; device memory drops by the dequantized encoder size (reported as `host_vision_weights_bytes`). | off |
+| `--vision-cpu` | enable media input with the ViT encoder running on CPU; the 27 backbone layers and merger are dequantized once at load into host DRAM (not the device arena), encoded on host per item, and handed to the device with a single embedding copy. Slower Vision encode; device memory drops by the dequantized encoder size (reported as `host_vision_weights_bytes`). To keep the (quadratic-in-patches) CPU encode bounded, the image pixel budget is clamped to `262144` (~512 × 512); oversized images are downscaled, never rejected. | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--device-state-slots N` | extra Device checkpoint StateImages beyond the active-lane guarantee | `max-concurrency` |

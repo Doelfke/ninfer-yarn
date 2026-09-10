@@ -190,10 +190,16 @@ fi::ProcessorOptions processor_options(const FrontendResources& resources) {
     return options;
 }
 
-void validate_registered_processor(const fi::ProcessorOptions& options) {
-    if (options.image_min_pixels != kRegisteredImageMinimumPixels ||
-        options.image_max_pixels != kRegisteredImageMaximumPixels ||
-        options.video_min_pixels != kRegisteredVideoMinimumPixels ||
+// `offload` is true when the ViT runs on CPU (`--vision-cpu`): the registered
+// image_max_pixels budget (4096^2, chosen for the GPU path) is intentionally lowered to keep the
+// CPU encode (quadratic in patch count) bounded. The lowered bound is still validated to sit
+// within [registered min, registered max]; the video bounds and the image minimum are unchanged.
+void validate_registered_processor(const fi::ProcessorOptions& options, bool offload) {
+    const bool min_ok  = options.image_min_pixels == kRegisteredImageMinimumPixels;
+    const bool max_ok  = options.image_max_pixels == kRegisteredImageMaximumPixels ||
+                         (offload && options.image_max_pixels >= kRegisteredImageMinimumPixels &&
+                          options.image_max_pixels <= kRegisteredImageMaximumPixels);
+    if (!min_ok || !max_ok || options.video_min_pixels != kRegisteredVideoMinimumPixels ||
         options.video_max_pixels != kRegisteredVideoMaximumPixels) {
         throw std::invalid_argument(
             "registered processor pixel bounds do not match the compiled Vision item capacity");
@@ -903,8 +909,17 @@ public:
                 options.media_cache_bytes, options.media_live_bytes,
                 options.media_preprocess_threads, static_cast<std::size_t>(minimum_live));
         }
+        if (options.vision_cpu_offload) {
+            // CPU encode is quadratic in patch count; clamp the image budget to the offload cap.
+            // Always clamp into [image_min_pixels, image_max_pixels] so an offload cap that is
+            // itself below the registered minimum (or the registered geometry is already lower)
+            // falls back to the registered bound rather than rejecting or upscaling images.
+            processor.image_max_pixels =
+                std::clamp(kCpuOffloadImageMaximumPixels, processor.image_min_pixels,
+                           processor.image_max_pixels);
+        }
         if (registered_checkpoint) {
-            validate_registered_processor(processor);
+            validate_registered_processor(processor, options.vision_cpu_offload);
             validate_registered_tokenizer(*tokenizer);
         }
         for (const int token : tokenizer->default_stop_token_ids()) {

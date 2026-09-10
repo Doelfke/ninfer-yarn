@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -15,12 +16,24 @@ namespace ninfer::targets::qwen3_6 {
 
 inline constexpr std::size_t kTokenDomain = 248077;
 
+// Image pixel budget applied when the ViT runs on CPU (`FrontendOptions.vision_cpu_offload`). The
+// CPU encode is dominated by the ~O(P^2) dense attention over a frame's patch tokens (P = pixels
+// / 256), so a full-resolution 4096^2 image (the registered no-resize cap) costs minutes per
+// request. 262144 ~= 512x512 ~= 1024 patch tokens keeps the encode to a handful of seconds on a
+// modern many-core CPU while retaining ~512^2 of image detail; the frontend clamps the effective
+// budget to [registered min, registered max], so it can never reject or upscale an image that the
+// registered geometry would have accepted.
+inline constexpr std::uint64_t kCpuOffloadImageMaximumPixels = 262'144U;
+
 struct FrontendOptions {
     bool vision_enabled                    = true;
     std::uint32_t max_context              = 2'048;
     std::size_t media_cache_bytes          = kDefaultMediaCacheBytes;
     std::size_t media_live_bytes           = kDefaultMediaLiveBytes;
     std::uint32_t media_preprocess_threads = 0;
+    // When set (the target package forwards `StartupFeatures.vision_cpu_offload`), the image
+    // pixel budget is clamped to kCpuOffloadImageMaximumPixels so the CPU ViT encode stays bounded.
+    bool vision_cpu_offload               = false;
 };
 
 struct FrontendResources;

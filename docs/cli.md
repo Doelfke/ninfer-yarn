@@ -89,7 +89,10 @@ GPU residency is frozen when the Engine starts:
   layers plus the merger are dequantized to FP32 once at load into host DRAM rather than the device
   arena, and each multimodal item is encoded on the host and handed to the device with a single
   embedding copy. This frees the encoder's device footprint (reported as `host_vision_weights_bytes`
-  in the memory summary) at the cost of slower Vision encode.
+  in the memory summary) at the cost of slower Vision encode. The encode cost grows quadratically
+  with the image patch count (patches = resized pixels / 256), so when `--vision-cpu` is active the
+  image pixel budget is clamped to `262144` (~512 × 512, ~1024 patches) to keep the encode bounded;
+  larger images are downscaled, never rejected or upsampled.
 - the one-request CLI uses root-only context mode, so it does not reserve an extra Device
   checkpoint StateImage or capture a continuation that no later request could consume.
 
