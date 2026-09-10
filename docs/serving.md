@@ -785,6 +785,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
+| `--vision-cpu` | enable media input with the ViT encoder running on CPU; the 27 backbone layers and merger are dequantized once at load into host DRAM (not the device arena), encoded on host per item, and handed to the device with a single embedding copy. Slower Vision encode; device memory drops by the dequantized encoder size (reported as `host_vision_weights_bytes`). | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--device-state-slots N` | extra Device checkpoint StateImages beyond the active-lane guarantee | `max-concurrency` |
@@ -886,7 +887,11 @@ derived downstream from raw token counts and seconds instead of rounded stderr s
 For `server_start.memory`, `workspace.capacity_bytes` is the only physical workspace allocation.
 When Vision is enabled, `vision_workspace` reports the aggregate prompt and maximum-item token
 bounds plus encode peak and handoff layout/usage within that same allocation; these bytes must not
-be added to `workspace.capacity_bytes`. The field is `null` when Vision is disabled.
+be added to `workspace.capacity_bytes`. The field is `null` when Vision is disabled. Under
+`--vision-cpu` the encode scratch runs on the host and `encode_peak_bytes` is `0`; the device
+reservation is the fixed embedding handoff region only. The memory summary also carries
+`host_vision_weights_bytes`, the dequantized FP32 encoder size resident in host DRAM (the VRAM
+that offloading frees from the weights arena).
 
 `request_done.engine_timing` separates FIFO `queue_wait_seconds`, blocking
 `device_wait_exposed_seconds`, and five mutually exclusive Host-active exposure phases under

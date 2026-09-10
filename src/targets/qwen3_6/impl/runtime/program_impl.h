@@ -782,10 +782,15 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     if (model.weights_arena == nullptr) {
         throw std::invalid_argument("Qwen3.6 model view has no owning weight arena");
     }
+    // Vision residency depends on the offload flag: --vision-cpu models carry host weights
+    // (vision_cpu) instead of device weights (vision).
+    const bool want_device_vision = plan.features.vision && !plan.features.vision_cpu_offload;
+    const bool want_host_vision   = plan.features.vision && plan.features.vision_cpu_offload;
     if (model.features != plan.features || model.mtp.has_value() != plan.features.mtp() ||
         model.dflash.has_value() != plan.features.masked_draft() ||
         model.optimized_proposal.has_value() != plan.features.optimized_proposal() ||
-        model.vision.has_value() != plan.features.vision) {
+        model.vision.has_value() != want_device_vision ||
+        model.vision_cpu.has_value() != want_host_vision) {
         throw std::invalid_argument(
             "Qwen3.6 loaded weights do not match the frozen startup features");
     }
@@ -12383,6 +12388,9 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
     out.workspace_logical_peak_bytes = workspace_logical_peak_bytes;
     out.cuda_graph_allowance_bytes   = graph_allowance_bytes;
     out.kv_payload_bytes             = kv_payload_bytes;
+    if (model.vision_cpu) {
+        out.host_vision_weights_bytes = model.vision_cpu->bytes();
+    }
     if (host_state_images) {
         out.host_state_capacity_slots = host_state_images->capacity();
         out.host_state_occupied_slots = host_state_images->occupied();

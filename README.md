@@ -17,3 +17,13 @@ Example:
    --rope-scaling-factor 1.6 --rope-scaling-original-context 262144 \
    --tolerant-tool-calls
 ```
+
+## `--vision-cpu`
+
+`--vision-cpu` is `--vision` with the Vision encoder (ViT) running on CPU: the backbone and merger
+weights are dequantized once at load into host DRAM rather than the GPU arena, each multimodal
+item is encoded on the host, and the projected embedding is handed to the device with a single
+copy. Use it to free the encoder's GPU footprint when VRAM is the constraint and Vision encode
+throughput is not. The freed size is reported as `host_vision_weights_bytes` in the memory summary
+(the device `encode_peak_bytes` is `0` and the only device-resident Vision region is the small
+embedding handoff).

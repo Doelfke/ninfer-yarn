@@ -1,4 +1,5 @@
 #include "targets/qwen3_6_35b_a3b/impl/load/bindings.h"
+#include "targets/qwen3_6_35b_a3b/impl/load/vision_cpu_load.h"
 
 #include "artifact/typed_binding.h"
 
@@ -179,9 +180,10 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, qwen3_6::StartupFeature
                                   NumericFormat::W8G32_F16S, mtp_placement);
     out.mtp.final_norm = bind_mtp("mtp/final_norm", NumericFormat::BF16, {2048});
 
+    const bool vision_offload = features.vision && features.vision_cpu_offload;
     const artifact::TensorPlacement vision_placement =
-        features.vision ? artifact::TensorPlacement::Device
-                        : artifact::TensorPlacement::ValidateOnly;
+        (features.vision && !vision_offload) ? artifact::TensorPlacement::Device
+                                             : artifact::TensorPlacement::ValidateOnly;
     out.vision_backbone     = qwen3_6::bind_vision_backbone(binder, vision_placement);
     out.vision_merger_input = qwen3_6::bind_vision_merger_input(binder, vision_placement);
     out.vision_merger_fc2   = artifact::bind_tensor(
@@ -189,6 +191,13 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, qwen3_6::StartupFeature
     out.vision_merger_fc2_bias = artifact::bind_tensor(
         binder, "vision/merger/fc2_bias", NumericFormat::BF16, {2048}, vision_placement);
     out.vision_merger_norm = qwen3_6::bind_vision_merger_norm(binder, vision_placement);
+    if (vision_offload) {
+        // Offload: dequant the whole encoder into host DRAM now and never bind it to the device
+        // arena; the ViT runs on CPU (see vision_context_impl.h).
+        out.vision_cpu = load_vision_cpu_weights(binder, out.vision_backbone, out.
+            vision_merger_input, out.vision_merger_norm, out.vision_merger_fc2,
+            out.vision_merger_fc2_bias);
+    }
 
     const artifact::TensorPlacement dflash_placement =
         features.dflash() ? artifact::TensorPlacement::Device
@@ -327,13 +336,21 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
     }
 
     if (plan.features.vision) {
-        auto& vision  = runtime.vision.emplace();
-        vision.common = qwen3_6::materialize_vision_common(
-            backing, plan.vision_backbone, plan.vision_merger_input, plan.vision_merger_norm);
-        vision.merger_fc2      = artifact::materialized_weight(backing, plan.vision_merger_fc2,
-                                                               NumericFormat::W8G32_F16S, 2048, 4608);
-        vision.merger_fc2_bias = artifact::materialized_tensor(backing, plan.vision_merger_fc2_bias,
-                                                               NumericFormat::BF16, {2048});
+        if (plan.features.vision_cpu_offload) {
+            if (!plan.vision_cpu) {
+                throw std::logic_error(
+                    "vision-cpu offload selected but the vision weights are not host-materialized");
+            }
+            runtime.vision_cpu = std::move(plan.vision_cpu);
+        } else {
+            auto& vision  = runtime.vision.emplace();
+            vision.common = qwen3_6::materialize_vision_common(
+                backing, plan.vision_backbone, plan.vision_merger_input, plan.vision_merger_norm);
+            vision.merger_fc2      = artifact::materialized_weight(backing, plan.vision_merger_fc2,
+                                                                   NumericFormat::W8G32_F16S, 2048, 4608);
+            vision.merger_fc2_bias = artifact::materialized_tensor(backing, plan.vision_merger_fc2_bias,
+                                                                   NumericFormat::BF16, {2048});
+        }
     }
 
     if (plan.features.dflash()) {

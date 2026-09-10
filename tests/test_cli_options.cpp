@@ -61,6 +61,13 @@ int main() {
                           dflash_vision.speculative.backend == ninfer::SpeculativeBackend::DFlash &&
                           dflash_vision.speculative.draft_tokens == 7,
                       "CLI did not preserve the combined DFlash and Vision startup features");
+    const ninfer::cli::Options vision_cpu =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--vision-cpu"});
+    failures += check(vision_cpu.enable_vision && vision_cpu.vision_cpu_offload,
+                      "CLI --vision-cpu did not enable Vision + CPU offload");
+    failures +=
+        check(ninfer::cli::usage_text("ninfer-cli").find("--vision-cpu") != std::string::npos,
+              "CLI help omits --vision-cpu");
     for (const auto k : {1U, 2U, 7U, 15U}) {
         const auto dflash2 = parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec",
                                     "dflash2", "--draft-tokens", std::to_string(k)});

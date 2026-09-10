@@ -243,6 +243,7 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     engine_options.prefill_chunk            = options_.prefill_chunk;
     engine_options.kv_cache                 = options_.kv_cache;
     engine_options.enable_vision            = options_.enable_vision;
+    engine_options.vision_cpu_offload       = options_.vision_cpu_offload;
     engine_options.use_cuda_graph           = options_.use_cuda_graph;
     engine_options.rope_scaling_factor          = options_.rope_scaling_factor;
     engine_options.rope_scaling_original_context = options_.rope_scaling_original_context;

@@ -165,6 +165,10 @@ struct EngineOptions {
     // Zero selects a bounded worker count from the detected host concurrency.
     std::uint32_t media_preprocess_threads = 0;
     bool enable_vision                     = false;
+    // When true together with enable_vision, the Vision encoder runs entirely on host
+    // (CPU) instead of the device. Vision weights stay in host DRAM and are not
+    // materialized into the device arena, saving their VRAM cost.
+    bool vision_cpu_offload                = false;
     bool use_cuda_graph                    = true;
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;
@@ -817,6 +821,9 @@ struct MemorySummary {
     std::uint32_t host_state_occupied_slots       = 0;
     std::size_t host_kv_capacity_bytes            = 0;
     std::size_t host_kv_occupied_bytes            = 0;
+    // --vision-cpu: dequantized vision weights resident in host DRAM (0 unless offloading). Reports
+    // the DRAM footprint that replaces the device-resident vision weights, i.e. the VRAM freed.
+    std::size_t host_vision_weights_bytes         = 0;
 };
 
 // Worker-owned monotonic nanosecond counters. Top-level Host phases are mutually exclusive;

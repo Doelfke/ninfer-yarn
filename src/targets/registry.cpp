@@ -59,6 +59,10 @@ void validate_options(const EngineOptions& options) {
         throw std::invalid_argument(
             "Engine media_live_bytes must be nonzero when Vision is enabled");
     }
+    if (options.vision_cpu_offload && !options.enable_vision) {
+        throw std::invalid_argument(
+            "Engine vision_cpu_offload requires enable_vision");
+    }
     if (options.media_preprocess_threads > 64) {
         throw std::invalid_argument("Engine media_preprocess_threads must be in [0,64]");
     }

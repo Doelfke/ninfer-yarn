@@ -85,6 +85,11 @@ GPU residency is frozen when the Engine starts:
 - Vision is disabled by default, omitting its weights and Vision-specific unified-workspace extent;
 - `--vision` loads the weights, expands the one Program workspace for Vision encode/handoff, and
   enables image/video input.
+- `--vision-cpu` is `--vision` with the entire Vision encoder (ViT) running on CPU. The 27 backbone
+  layers plus the merger are dequantized to FP32 once at load into host DRAM rather than the device
+  arena, and each multimodal item is encoded on the host and handed to the device with a single
+  embedding copy. This frees the encoder's device footprint (reported as `host_vision_weights_bytes`
+  in the memory summary) at the cost of slower Vision encode.
 - the one-request CLI uses root-only context mode, so it does not reserve an extra Device
   checkpoint StateImage or capture a continuation that no later request could consume.
 
@@ -210,6 +215,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--rope-scaling-factor F` | YaRN position-scaling factor `1.0..32.0`; `1.0` disables scaling, larger values extend the effective context limit by the factor | `1.0` |
 | `--rope-scaling-original-context N` | YaRN ramp threshold; positions at or below it are unscaled | `262144` |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
+| `--vision-cpu` | enable image/video input with the ViT encoder on CPU; weights live in host DRAM (not VRAM), encode is slower but GPU memory drops by the dequantized encoder size | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-thinking` | disable thinking in prompt rendering | thinking on |
 | `--thinking-budget N` | positive model-origin thinking-token cap; omitted means unlimited | unset |

@@ -48,6 +48,7 @@ struct ServeOptions {
     SpeculativeOptions speculative;
     ContextCacheOptions context_cache;
     bool enable_vision      = false;
+    bool vision_cpu_offload = false;
     bool use_cuda_graph     = true;
     bool allow_prefix_reuse = true;
     bool enable_thinking =

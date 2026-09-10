@@ -5,6 +5,7 @@
 #include <ninfer/targets/qwen3_6/model_view.h>
 #include <ninfer/targets/qwen3_6/startup_features.h>
 #include <ninfer/targets/qwen3_6/vision.h>
+#include <ninfer/targets/qwen3_6/vision_cpu_weights.h>
 
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
@@ -101,6 +102,8 @@ struct BindingPlan {
     artifact::ObjectHandle vision_merger_fc2;
     artifact::ObjectHandle vision_merger_fc2_bias;
     qwen3_6::VisionMergerNormPlan vision_merger_norm;
+    // Host-resident dequantized vision weights (present only when `features.vision_cpu_offload`).
+    std::optional<qwen3_6::vision_cpu::CpuVisionWeights> vision_cpu;
     DFlashPlan dflash;
 };
 

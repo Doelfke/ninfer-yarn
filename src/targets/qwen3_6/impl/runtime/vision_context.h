@@ -8,10 +8,12 @@
 #include "core/tensor.h"
 #include "core/weight.h"
 #include <ninfer/targets/qwen3_6/vision_control.h>
+#include <ninfer/targets/qwen3_6/vision_cpu_weights.h>
 #include "targets/qwen3_6/impl/runtime/layouts.h"
 #include "targets/qwen3_6/impl/runtime/vision_prefill.h"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -124,6 +126,11 @@ private:
     std::size_t active_handoff_bytes_ = 0;
     std::vector<std::uint32_t> encoded_payloads_pending_release_;
     std::vector<CudaEventTimer> timers_;
+    // --vision-cpu: host-resident weights (non-null when offloading) make `prepare_chunk` run the
+    // whole encoder on CPU and issue a single H2D handoff instead of the CUDA Op graph. Host
+    // encode wall time is accumulated into `host_elapsed_` and included in `elapsed_seconds()`.
+    const qwen3_6::vision_cpu::CpuVisionWeights* const cpu_weights_ = nullptr;
+    std::chrono::steady_clock::duration host_elapsed_{};
 };
 
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

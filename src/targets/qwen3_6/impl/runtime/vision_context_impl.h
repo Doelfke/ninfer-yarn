@@ -1,5 +1,6 @@
 #include "targets/qwen3_6/impl/runtime/instance.h"
 #include "targets/qwen3_6/impl/runtime/vision_context.h"
+#include "targets/qwen3_6/impl/runtime/vision_cpu/vision_cpu.h"
 
 #include "core/device.h"
 #include "core/layout.h"
@@ -175,9 +176,10 @@ void copy_host(const void* src, Tensor& dst, cudaStream_t stream) {
 } // namespace
 
 VisionContext::VisionContext(DeviceContext& ctx, const LoadedModelData& weights) : ctx_(ctx) {
-    if (!weights.vision) {
+    if (!weights.vision && !weights.vision_cpu) {
         throw std::invalid_argument("Vision execution was requested without materialized weights");
     }
+    if (!weights.vision) { return; } // --vision-cpu: encoder runs on CPU; no device weight refs.
     const auto& vision = *weights.vision;
     patch_embed_       = &vision.common.patch_embedding;
     patch_embed_bias_  = &vision.common.patch_embedding_bias;
@@ -395,7 +397,8 @@ VisionPrefillSession::VisionPrefillSession(DeviceContext& device, const LoadedMo
                                            const VisionPrefillPlan& plan,
                                            std::size_t& handoff_peak_bytes)
     : device_(device), workspace_(workspace), workspace_plan_(workspace_plan), prompt_(prompt),
-      plan_(plan), handoff_peak_bytes_(handoff_peak_bytes), context_(device, model) {
+      plan_(plan), handoff_peak_bytes_(handoff_peak_bytes), context_(device, model),
+      cpu_weights_(model.vision_cpu ? &*model.vision_cpu : nullptr) {
     if (plan_.control == nullptr || plan_.control->items.empty() || plan_.uses.empty()) {
         throw std::invalid_argument("Vision prefill plan has no suffix item spans");
     }
@@ -482,11 +485,38 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
 
     if (!active_item_ || *active_item_ != active->prepared_item_index) {
         const auto& payload = prompt_.media_payloads[active->prepared_item_index];
-        timers_.emplace_back(device_);
-        timers_.back().start();
-        context_.encode(VisionItemView{payload->span(), &control}, output, workspace_,
-                        workspace_plan_);
-        timers_.back().record_stop();
+        if (cpu_weights_ == nullptr) {
+            timers_.emplace_back(device_);
+            timers_.back().start();
+            context_.encode(VisionItemView{payload->span(), &control}, output, workspace_,
+                            workspace_plan_);
+            timers_.back().record_stop();
+        } else {
+            // --vision-cpu: the whole ViT runs on host DRAM; only the projected embedding
+            // [out_hidden, merged] is copied to the device handoff region (a single H2D copy).
+            const auto patches64 = control.patch_count;
+            if (payload->patch_elements !=
+                checked_mul(patches64, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
+                            "item patch elements")) {
+                throw std::invalid_argument("Vision-cpu patch buffer has invalid shape");
+            }
+            std::vector<float> out_host;
+            {
+                std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+                qwen3_6::vision_cpu::encode(
+                    *cpu_weights_, payload->patches.get(), control.position_ids.data(),
+                    control.position_table_indices.data(), control.position_table_weights.data(),
+                    static_cast<std::int32_t>(patches64), control.segment_length, /*threads=*/0,
+                    out_host);
+                host_elapsed_ += std::chrono::steady_clock::now() - start;
+            }
+            const std::vector<std::uint16_t> out_bf16 = qwen3_6::vision_cpu::to_bf16(out_host);
+            if (static_cast<std::size_t>(out_bf16.size()) * 2 != output.bytes()) {
+                throw std::logic_error("Vision-cpu handoff extent does not match the output tensor");
+            }
+            CUDA_CHECK(cudaMemcpyAsync(output.data, out_bf16.data(), output.bytes(),
+                                       cudaMemcpyHostToDevice, device_.stream));
+        }
         active_item_          = active->prepared_item_index;
         active_handoff_bytes_ = output.bytes();
         handoff_peak_bytes_   = std::max(handoff_peak_bytes_, active_handoff_bytes_);
@@ -511,6 +541,9 @@ void VisionPrefillSession::retire_handoff() noexcept {
 double VisionPrefillSession::elapsed_seconds() const {
     double milliseconds = 0.0;
     for (const CudaEventTimer& timer : timers_) { milliseconds += timer.elapsed_ms(); }
+    // --vision-cpu: host-side encode wall time (device timers are unused in this path).
+    milliseconds +=
+        std::chrono::duration_cast<std::chrono::microseconds>(host_elapsed_).count() / 1000.0;
     return milliseconds / 1000.0;
 }
 

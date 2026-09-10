@@ -284,6 +284,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.default_thinking_budget = static_cast<std::uint32_t>(parse_nonnegative_int(require_value("--default-thinking-budget"), "default-thinking-budget"));
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--vision-cpu") {
+            options.enable_vision      = true;
+            options.vision_cpu_offload = true;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--no-prefix-reuse") {

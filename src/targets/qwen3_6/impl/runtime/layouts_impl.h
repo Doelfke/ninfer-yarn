@@ -637,6 +637,13 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
         const std::uint32_t merged = static_cast<std::uint32_t>(
             std::min<std::uint64_t>(plan.capacity, kMaximumVisionItemTokens));
         out.vision   = schedule::VisionContext::plan_workspace(merged, out.general_capacity);
+        if (plan.features.vision_cpu_offload) {
+            // --vision-cpu: the encoder runs on CPU (see vision_context_impl.h), so no device
+            // encode scratch is needed; the only device-resident portion is the embedding handoff.
+            out.vision->encode_peak_bytes = 0;
+            out.vision->capacity_bytes    = out.vision->handoff_offset_bytes +
+                                            out.vision->handoff_capacity_bytes;
+        }
         out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
     }
     return out;

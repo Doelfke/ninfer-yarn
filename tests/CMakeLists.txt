@@ -229,6 +229,24 @@ target_include_directories(ninfer_context_cost_measure_test PRIVATE
   ${PROJECT_SOURCE_DIR}/bench/context_cost)
 add_test(NAME ninfer_context_cost_measure_test COMMAND ninfer_context_cost_measure_test)
 
+# Host-side qualification of the CPU vision encoder core used by the `--vision-cpu` offload.
+# It deliberately links no Engine/CUDA target: the CPU math is qualified against independent
+# oracles (dequant vs the reference packer, GEMM vs FP64 dot, attention vs the naive oracle), so
+# it builds and runs on any host. The 1.7 GB full-encode smoke is gated on VISION_CPU_FULL.
+add_executable(ninfer_vision_cpu_test targets/qwen3_6/vision_cpu/test_vision_cpu.cpp)
+target_include_directories(ninfer_vision_cpu_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(ninfer_vision_cpu_test PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-fast-math>
+    $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+endif()
+if(UNIX AND NOT APPLE)
+  target_link_libraries(ninfer_vision_cpu_test PRIVATE pthread)
+endif()
+add_test(NAME ninfer_vision_cpu_test COMMAND ninfer_vision_cpu_test)
+
 # Shared Op numerical tests. Target-composed schedule tests are registered separately below.
 set(ninfer_op_tests
   add_bias

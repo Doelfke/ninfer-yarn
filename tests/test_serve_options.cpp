@@ -133,6 +133,13 @@ int main() {
                           dflash_vision.speculative.backend == ninfer::SpeculativeBackend::DFlash &&
                           dflash_vision.speculative.draft_tokens == 15,
                       "serve options did not preserve combined DFlash and Vision features");
+    const ServeOptions vision_cpu =
+        parse({"ninfer-serve", "model.ninfer", "--vision-cpu"});
+    failures += check(vision_cpu.enable_vision && vision_cpu.vision_cpu_offload,
+                      "serve --vision-cpu did not enable Vision + CPU offload");
+    failures +=
+        check(serve_usage_text("ninfer-serve").find("--vision-cpu") != std::string::npos,
+              "serve help omits --vision-cpu");
 
     bool implicit_backend_rejected = false;
     try {

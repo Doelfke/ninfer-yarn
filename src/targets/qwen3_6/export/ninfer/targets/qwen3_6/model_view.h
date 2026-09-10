@@ -2,6 +2,7 @@
 
 #include <ninfer/targets/qwen3_6/startup_features.h>
 #include <ninfer/targets/qwen3_6/vision.h>
+#include <ninfer/targets/qwen3_6/vision_cpu_weights.h>
 
 #include "core/tensor.h"
 
@@ -134,6 +135,10 @@ struct ModelView {
     std::optional<MtpLayer> mtp;
     std::optional<DFlashPayload> dflash;
     std::optional<VisionWeights> vision;
+    // Host-resident FP32 vision weights, present only when `features.vision_cpu_offload` is set.
+    // Mutually exclusive with `vision`: offloading materializes the encoder in host DRAM and never
+    // binds the device weight arena.
+    std::optional<vision_cpu::CpuVisionWeights> vision_cpu;
 };
 
 } // namespace targets::qwen3_6
