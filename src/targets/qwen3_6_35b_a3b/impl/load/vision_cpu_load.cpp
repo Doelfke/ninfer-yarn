@@ -12,7 +12,7 @@
 namespace ninfer::targets::qwen3_6_35b_a3b::detail {
 namespace {
 
-using qc = qwen3_6::vision_cpu;
+namespace qc = qwen3_6::vision_cpu;
 
 inline std::vector<float> quant_w(artifact::Binder& binder, artifact::ObjectHandle h, int n, int k,
                                   artifact::NumericFormat format) {
