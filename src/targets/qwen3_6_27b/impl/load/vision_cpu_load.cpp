@@ -35,12 +35,13 @@ inline std::vector<float> quant_w(artifact::Binder& binder, artifact::ObjectHand
     return qc::dequant_row_split_lowbit(bytes, n, k, to_qtype(format));
 }
 
-// Convert a contiguous BF16 payload (row-major, `elements` half-words) to FP32.
+// Convert a contiguous BF16 payload (row-major) to FP32.
+// NOTE: span.data.size() is the payload length in BYTES; a BF16 element is 2 bytes.
 inline std::vector<float> bf16_w(artifact::Binder& binder, artifact::ObjectHandle h) {
     const auto span = binder.payload(h);
     const std::uint16_t* words =
         reinterpret_cast<const std::uint16_t*>(span.data.data());
-    const std::size_t count = span.data.size();
+    const std::size_t count = span.data.size() / 2;
     std::vector<float> out(count);
     for (std::size_t i = 0; i < count; ++i) { out[i] = qc::fp::bf16_to_f32(words[i]); }
     return out;

@@ -18,7 +18,7 @@ Example:
    --tolerant-tool-calls
 ```
 
-## `--vision-cpu`
+## `--vision-cpu (WIP)`
 
 `--vision-cpu` is `--vision` with the Vision encoder (ViT) running on CPU: the backbone and merger
 weights are dequantized once at load into host DRAM rather than the GPU arena, each multimodal
