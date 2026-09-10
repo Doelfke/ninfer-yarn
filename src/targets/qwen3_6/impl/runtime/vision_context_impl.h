@@ -16,13 +16,17 @@
 #include "ninfer/ops/vision_pos_embed.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 #include <exception>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
 namespace {
@@ -494,21 +498,40 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
         } else {
             // --vision-cpu: the whole ViT runs on host DRAM; only the projected embedding
             // [out_hidden, merged] is copied to the device handoff region (a single H2D copy).
+            // Set NINFER_VISION_CPU_TRACE=1 for a per-encode stderr diagnostic (patches,
+            // segments, thread count, wall time); useful when a client appears to time out
+            // because the CPU ViT is slow on large images.
+            static const bool vision_cpu_debug_log = [] {
+                const char* e = std::getenv("NINFER_VISION_CPU_TRACE");
+                return e != nullptr &&
+                       (std::string_view(e) == "1" || std::string_view(e) == "true" ||
+                        std::string_view(e) == "TRUE");
+            }();
             const auto patches64 = control.patch_count;
             if (payload->patch_elements !=
                 checked_mul(patches64, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
                             "item patch elements")) {
                 throw std::invalid_argument("Vision-cpu patch buffer has invalid shape");
             }
+            const int threads   = static_cast<int>(std::thread::hardware_concurrency());
             std::vector<float> out_host;
             {
-                std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+                const auto start = std::chrono::steady_clock::now();
                 qwen3_6::vision_cpu::encode(
                     *cpu_weights_, payload->patches.get(), control.position_ids.data(),
                     control.position_table_indices.data(), control.position_table_weights.data(),
-                    static_cast<std::int32_t>(patches64), control.segment_length, /*threads=*/0,
+                    static_cast<std::int32_t>(patches64), control.segment_length, threads,
                     out_host);
-                host_elapsed_ += std::chrono::steady_clock::now() - start;
+                const auto dt = std::chrono::steady_clock::now() - start;
+                host_elapsed_ += dt;
+                if (vision_cpu_debug_log) {
+                    std::cerr << "[vision-cpu] encode patches=" << patches64
+                              << " frames=" << control.segment_count
+                              << " segment_len=" << control.segment_length
+                              << " threads=" << threads
+                              << " time_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(dt).count()
+                              << "\n";
+                }
             }
             const std::vector<std::uint16_t> out_bf16 = qwen3_6::vision_cpu::to_bf16(out_host);
             if (static_cast<std::size_t>(out_bf16.size()) * 2 != output.bytes()) {

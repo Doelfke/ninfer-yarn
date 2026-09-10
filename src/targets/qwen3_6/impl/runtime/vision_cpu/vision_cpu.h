@@ -286,31 +286,60 @@ inline void add_bias(float* y, const float* bias, int n, int t) {
 }
 
 // a[i][j] += b[i][j] over [n,t].
-inline void residual_add(float* a, int n, int t, const float* b) {
+inline void residual_add(float* a, int n, int t, const float* b, int threads = 0) {
     const std::size_t total = static_cast<std::size_t>(n) * t;
-    for (std::size_t j = 0; j < total; ++j) { a[j] += b[j]; }
+    const int th = clamp_threads(threads, static_cast<int>(std::max<std::size_t>(1, total / 1024)));
+    auto worker = [&](std::int64_t start, std::int64_t end) {
+        for (std::int64_t j = start; j < end; ++j) { a[j] += b[j]; }
+    };
+    if (th == 1) { worker(0, static_cast<std::int64_t>(total)); }
+    else {
+        const std::int64_t row0 = static_cast<std::int64_t>(total) / th;
+        std::vector<std::thread> pool;
+        pool.reserve(th);
+        for (int i = 0; i < th; ++i) {
+            const std::int64_t a = row0 * i;
+            const std::int64_t b = (i == th - 1) ? static_cast<std::int64_t>(total) : row0 * (i + 1);
+            pool.emplace_back(worker, a, b);
+        }
+        for (auto& thd : pool) { thd.join(); }
+    }
 }
 
 // Per-column LayerNorm over [features, tokens]: for each token col p, mean/var over r in [0,features);
 // y[r][p] = (x[r][p]-mean)/sqrt(var+eps) * w[r] + b[r]. `eps` is inside the sqrt (matches the device op).
 inline void layer_norm(const float* x, int features, int tokens, const float* w, const float* b, float eps,
-                       float* y) {
-    const std::size_t total = static_cast<std::size_t>(features) * tokens;
-    for (int p = 0; p < tokens; ++p) {
-        float mean = 0.0F;
-        for (int r = 0; r < features; ++r) { mean += x[static_cast<std::size_t>(p) * features + r]; }
-        mean /= features;
-        float var = 0.0F;
-        for (int r = 0; r < features; ++r) {
-            const float d = x[static_cast<std::size_t>(p) * features + r] - mean;
-            var += d * d;
+                       float* y, int threads = 0) {
+    const int th = clamp_threads(threads, tokens);
+    auto worker = [&](int i0, int i1) {
+        for (int p = i0; p < i1; ++p) {
+            float mean = 0.0F;
+            for (int r = 0; r < features; ++r) { mean += x[static_cast<std::size_t>(p) * features + r]; }
+            mean /= features;
+            float var = 0.0F;
+            for (int r = 0; r < features; ++r) {
+                const float d = x[static_cast<std::size_t>(p) * features + r] - mean;
+                var += d * d;
+            }
+            var /= features;
+            const float inv = 1.0F / std::sqrt(var + eps);
+            for (int r = 0; r < features; ++r) {
+                const float d = x[static_cast<std::size_t>(p) * features + r] - mean;
+                y[static_cast<std::size_t>(p) * features + r] = d * inv * w[r] + b[r];
+            }
         }
-        var /= features;
-        const float inv = 1.0F / std::sqrt(var + eps);
-        for (int r = 0; r < features; ++r) {
-            const float d = x[static_cast<std::size_t>(p) * features + r] - mean;
-            y[static_cast<std::size_t>(p) * features + r] = d * inv * w[r] + b[r];
+    };
+    if (th == 1) { worker(0, tokens); }
+    else {
+        const int row0 = tokens / th;
+        std::vector<std::thread> pool;
+        pool.reserve(th);
+        for (int i = 0; i < th; ++i) {
+            const int a = row0 * i;
+            const int b = (i == th - 1) ? tokens : row0 * (i + 1);
+            pool.emplace_back(worker, a, b);
         }
+        for (auto& thd : pool) { thd.join(); }
     }
 }
 
@@ -324,11 +353,23 @@ inline float gelu_exact(float x) {
 }
 
 // Element-wise tanh/exact gelu over a buffer.
-inline void apply_gelu(float* v, std::size_t count, bool exact) {
-    if (exact) {
-        for (std::size_t i = 0; i < count; ++i) { v[i] = gelu_exact(v[i]); }
-    } else {
-        for (std::size_t i = 0; i < count; ++i) { v[i] = gelu_tanh(v[i]); }
+inline void apply_gelu(float* v, std::size_t count, bool exact, int threads = 0) {
+    const int th = clamp_threads(threads, static_cast<int>(std::max<std::size_t>(1, count / 1024)));
+    auto worker = [&](std::int64_t a, std::int64_t b) {
+        if (exact) { for (std::int64_t i = a; i < b; ++i) { v[i] = gelu_exact(v[i]); } }
+        else { for (std::int64_t i = a; i < b; ++i) { v[i] = gelu_tanh(v[i]); } }
+    };
+    if (th == 1) { worker(0, static_cast<std::int64_t>(count)); }
+    else {
+        const std::int64_t row0 = static_cast<std::int64_t>(count) / th;
+        std::vector<std::thread> pool;
+        pool.reserve(th);
+        for (int i = 0; i < th; ++i) {
+            const std::int64_t a = row0 * i;
+            const std::int64_t b = (i == th - 1) ? static_cast<std::int64_t>(count) : row0 * (i + 1);
+            pool.emplace_back(worker, a, b);
+        }
+        for (auto& thd : pool) { thd.join(); }
     }
 }
 
@@ -362,38 +403,72 @@ inline constexpr float kVisionInvFreq[18] = {
     4.641588834e-04F, 2.782559402e-04F, 1.668100537e-04F};
 } // namespace rope_consts
 
-inline void vision_rope(float* q, const std::int32_t* position_ids, int tokens, int heads) {
+inline void vision_rope(float* q, const std::int32_t* position_ids, int tokens, int heads,
+                        int threads = 0) {
     const int R = geom::rotary_dim; // 72
     const int half = R / 2;        // 36
     // Precompute cos/sin per (pair, token). pairs = 36.
+    // Each element writes pair_cos/sin[i * tokens + t] for a distinct `t` -> parallel per `t`.
     std::vector<float> pair_cos(static_cast<std::size_t>(half) * tokens);
     std::vector<float> pair_sin(static_cast<std::size_t>(half) * tokens);
-    for (int i = 0; i < half; ++i) {
-        const int axis       = i / 18; // 0 for i<18, 1 for i>=18
-        const float frequency = rope_consts::kVisionInvFreq[i % 18];
-        const std::int32_t* axis_pos = position_ids + static_cast<std::size_t>(axis) * tokens;
-        for (int t = 0; t < tokens; ++t) {
-            const float ang     = static_cast<float>(axis_pos[t]) * frequency;
-            pair_cos[static_cast<std::size_t>(i) * tokens + t] = std::cos(ang);
-            pair_sin[static_cast<std::size_t>(i) * tokens + t] = std::sin(ang);
-        }
-    }
-    auto rotate = [&](float* data) {
-        for (int h = 0; h < heads; ++h) {
-            for (int t = 0; t < tokens; ++t) {
-                float* base = data + (static_cast<std::size_t>(t) * heads + h) * R;
+    {
+        const int th = clamp_threads(threads, tokens);
+        auto worker  = [&](int a, int b) {
+            for (int t = a; t < b; ++t) {
                 for (int i = 0; i < half; ++i) {
-                    const float c = pair_cos[static_cast<std::size_t>(i) * tokens + t];
-                    const float s = pair_sin[static_cast<std::size_t>(i) * tokens + t];
-                    const float a = base[i];
-                    const float b = base[i + half];
-                    base[i]       = a * c - b * s;
-                    base[i + half] = b * c + a * s;
+                    const int axis      = i / 18; // 0 for i<18, 1 for i>=18
+                    const float frequency = rope_consts::kVisionInvFreq[i % 18];
+                    const int32_t ax_pos   = position_ids[static_cast<std::size_t>(axis) * tokens + t];
+                    const float ang        = static_cast<float>(ax_pos) * frequency;
+                    pair_cos[static_cast<std::size_t>(i) * tokens + t] = std::cos(ang);
+                    pair_sin[static_cast<std::size_t>(i) * tokens + t] = std::sin(ang);
                 }
             }
+        };
+        if (th == 1) { worker(0, tokens); }
+        else {
+            const int row0 = tokens / th;
+            std::vector<std::thread> pool;
+            pool.reserve(th);
+            for (int i = 0; i < th; ++i) {
+                const int a = row0 * i;
+                const int b = (i == th - 1) ? tokens : row0 * (i + 1);
+                pool.emplace_back(worker, a, b);
+            }
+            for (auto& thd : pool) { thd.join(); }
         }
-    };
-    rotate(q);
+    }
+    // Rotate per (head, token, pair). Writes to q[(t*heads+h)*R + i] are disjoint per t -> parallel per t.
+    {
+        const int th = clamp_threads(threads, tokens);
+        auto worker  = [&](int a, int b) {
+            for (int t = a; t < b; ++t) {
+                for (int h = 0; h < heads; ++h) {
+                    float* base = q + (static_cast<std::size_t>(t) * heads + h) * R;
+                    for (int i = 0; i < half; ++i) {
+                        const float c = pair_cos[static_cast<std::size_t>(i) * tokens + t];
+                        const float s = pair_sin[static_cast<std::size_t>(i) * tokens + t];
+                        const float x = base[i];
+                        const float y = base[i + half];
+                        base[i]       = x * c - y * s;
+                        base[i + half] = y * c + x * s;
+                    }
+                }
+            }
+        };
+        if (th == 1) { worker(0, tokens); }
+        else {
+            const int row0 = tokens / th;
+            std::vector<std::thread> pool;
+            pool.reserve(th);
+            for (int i = 0; i < th; ++i) {
+                const int a = row0 * i;
+                const int b = (i == th - 1) ? tokens : row0 * (i + 1);
+                pool.emplace_back(worker, a, b);
+            }
+            for (auto& thd : pool) { thd.join(); }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -404,20 +479,35 @@ inline void vision_rope(float* q, const std::int32_t* position_ids, int tokens, 
 //   x[h][p] += sum_{c=0..3} table[ indices[4p+c] ][h] * weights[4p+c]  (skipped if index out of range).
 // ---------------------------------------------------------------------------
 inline void vision_pos_embed_add(float* x, const float* table, const std::int32_t* indices,
-                                 const float* weights, int patches) {
+                                 const float* weights, int patches, int threads = 0) {
     const int d      = geom::hidden;
     const int table_rows = geom::position_embeddings;
-    for (int p = 0; p < patches; ++p) {
-        for (int h = 0; h < d; ++h) {
-            float pos = 0.0F;
-            for (int c = 0; c < 4; ++c) {
-                const std::int32_t idx = indices[static_cast<std::size_t>(p) * 4 + c];
-                if (idx >= 0 && idx < table_rows) {
-                    pos += table[static_cast<std::size_t>(idx) * d + h] * weights[static_cast<std::size_t>(p) * 4 + c];
+    const int th = clamp_threads(threads, patches);
+    auto worker = [&](int a, int b) {
+        for (int p = a; p < b; ++p) {
+            for (int h = 0; h < d; ++h) {
+                float pos = 0.0F;
+                for (int c = 0; c < 4; ++c) {
+                    const std::int32_t idx = indices[static_cast<std::size_t>(p) * 4 + c];
+                    if (idx >= 0 && idx < table_rows) {
+                        pos += table[static_cast<std::size_t>(idx) * d + h] * weights[static_cast<std::size_t>(p) * 4 + c];
+                    }
                 }
+                x[static_cast<std::size_t>(p) * d + h] += pos;
             }
-            x[static_cast<std::size_t>(p) * d + h] += pos;
         }
+    };
+    if (th == 1) { worker(0, patches); }
+    else {
+        const int row0 = patches / th;
+        std::vector<std::thread> pool;
+        pool.reserve(th);
+        for (int i = 0; i < th; ++i) {
+            const int a = row0 * i;
+            const int b = (i == th - 1) ? patches : row0 * (i + 1);
+            pool.emplace_back(worker, a, b);
+        }
+        for (auto& thd : pool) { thd.join(); }
     }
 }
 
@@ -429,46 +519,64 @@ inline void vision_pos_embed_add(float* x, const float* table, const std::int32_
 // (Mirrors ops::packed_softmax_attention with equal-length segments.)
 // ---------------------------------------------------------------------------
 inline void packed_dense_attention(const float* q, const float* k, const float* v, int tokens,
-                                   std::int32_t segment_length, float scale, float* out) {
+                                   std::int32_t segment_length, float scale, float* out,
+                                   int threads = 0) {
     const int D = geom::head_dim;
     const int H = geom::heads; // query heads == kv heads (group = 1 for the ViT).
+    const int HD = H * D;
     // q/k/v/out are [head_dim, heads, tokens] (feature fastest; token stride = H*D).
     // Per (query token), for each head: dense softmax over the token's frame.
-    std::vector<float> scores(static_cast<std::size_t>(segment_length));
-    for (int tq = 0; tq < tokens; ++tq) {
-        const int frame   = tq / segment_length;
-        const int seg0    = frame * segment_length;
-        for (int h = 0; h < H; ++h) {
-            float max_score = -std::numeric_limits<float>::infinity();
-            for (int j = 0; j < segment_length; ++j) {
-                const int tj = seg0 + j;
-                float dot = 0.0F;
-                for (int d = 0; d < D; ++d) {
-                    dot += q[static_cast<std::size_t>(tq) * (H * D) + h * D + d] *
-                           k[static_cast<std::size_t>(tj) * (H * D) + h * D + d];
-                }
-                const float s = dot * scale;
-                scores[static_cast<std::size_t>(j)] = s;
-                if (s > max_score) { max_score = s; }
-            }
-            float denom = 0.0F;
-            for (int j = 0; j < segment_length; ++j) {
-                float& s = scores[static_cast<std::size_t>(j)];
-                if (s == -std::numeric_limits<float>::infinity()) { continue; }
-                s = std::exp(s - max_score);
-                denom += s;
-            }
-            for (int d = 0; d < D; ++d) {
-                float num = 0.0F;
+    const int th   = clamp_threads(threads, tokens);
+    const int row0 = tokens / th;
+    auto worker    = [&](int a, int b) {
+        // Each worker keeps its own per-query `scores` scratch so threads do not share state.
+        std::vector<float> scores(static_cast<std::size_t>(segment_length));
+        for (int tq = a; tq < b; ++tq) {
+            const int frame   = tq / segment_length;
+            const int seg0    = frame * segment_length;
+            for (int h = 0; h < H; ++h) {
+                float max_score = -std::numeric_limits<float>::infinity();
                 for (int j = 0; j < segment_length; ++j) {
-                    const float w = scores[static_cast<std::size_t>(j)];
-                    if (w == -std::numeric_limits<float>::infinity()) { continue; }
-                    num += w * v[static_cast<std::size_t>(seg0 + j) * (H * D) + h * D + d];
+                    const int tj = seg0 + j;
+                    float dot = 0.0F;
+                    for (int d = 0; d < D; ++d) {
+                        dot += q[static_cast<std::size_t>(tq) * HD + h * D + d] *
+                               k[static_cast<std::size_t>(tj) * HD + h * D + d];
+                    }
+                    const float s = dot * scale;
+                    scores[static_cast<std::size_t>(j)] = s;
+                    if (s > max_score) { max_score = s; }
                 }
-                out[static_cast<std::size_t>(tq) * (H * D) + h * D + d] =
-                    denom > 0.0F ? num / denom : 0.0F;
+                float denom = 0.0F;
+                for (int j = 0; j < segment_length; ++j) {
+                    float& s = scores[static_cast<std::size_t>(j)];
+                    if (s == -std::numeric_limits<float>::infinity()) { continue; }
+                    s = std::exp(s - max_score);
+                    denom += s;
+                }
+                for (int d = 0; d < D; ++d) {
+                    float num = 0.0F;
+                    for (int j = 0; j < segment_length; ++j) {
+                        const float w = scores[static_cast<std::size_t>(j)];
+                        if (w == -std::numeric_limits<float>::infinity()) { continue; }
+                        num += w * v[static_cast<std::size_t>(seg0 + j) * HD + h * D + d];
+                    }
+                    out[static_cast<std::size_t>(tq) * HD + h * D + d] =
+                        denom > 0.0F ? num / denom : 0.0F;
+                }
             }
         }
+    };
+    if (th == 1) { worker(0, tokens); }
+    else {
+        std::vector<std::thread> pool;
+        pool.reserve(th);
+        for (int i = 0; i < th; ++i) {
+            const int a = row0 * i;
+            const int b = (i == th - 1) ? tokens : row0 * (i + 1);
+            pool.emplace_back(worker, a, b);
+        }
+        for (auto& thd : pool) { thd.join(); }
     }
 }
 
@@ -504,7 +612,7 @@ inline void encode(const CpuVisionWeights& w, const std::uint16_t* patches_bf16,
     std::vector<float> x(static_cast<std::size_t>(H) * P);
     gemm(w.patch_embed.data(), H, Pd, x_bf.data(), P, x.data(), threads);
     add_bias(x.data(), w.patch_bias.data(), H, P);
-    vision_pos_embed_add(x.data(), w.position_embedding.data(), pos_ind, pos_w, P);
+    vision_pos_embed_add(x.data(), w.position_embedding.data(), pos_ind, pos_w, P, threads);
 
     const int frames = P / segment_length;
     (void)frames;
@@ -516,7 +624,7 @@ inline void encode(const CpuVisionWeights& w, const std::uint16_t* patches_bf16,
     for (std::int32_t layer = 0; layer < geom::layers; ++layer) {
         const auto& lw = w.layers[static_cast<std::size_t>(layer)];
         // Attention.
-        layer_norm(x.data(), H, P, lw.norm1_w.data(), lw.norm1_b.data(), geom::norm_epsilon, norm.data());
+        layer_norm(x.data(), H, P, lw.norm1_w.data(), lw.norm1_b.data(), geom::norm_epsilon, norm.data(), threads);
         gemm(lw.qkv.data(), geom::qkv_out, H, norm.data(), P, qkv.data(), threads);
         add_bias(qkv.data(), lw.qkv_bias.data(), geom::qkv_out, P);
         // Extract contiguous q/k/v buffers [head_dim, heads, P] (feature fastest) from the packed
@@ -536,29 +644,29 @@ inline void encode(const CpuVisionWeights& w, const std::uint16_t* patches_bf16,
             std::memcpy(vbuf.data() + static_cast<std::size_t>(p) * qd, tok + 2 * geom::hidden,
                         static_cast<std::size_t>(qd) * sizeof(float));
         }
-        vision_rope(qbuf.data(), position_ids, P, geom::heads);
-        vision_rope(kbuf.data(), position_ids, P, geom::heads);
+        vision_rope(qbuf.data(), position_ids, P, geom::heads, threads);
+        vision_rope(kbuf.data(), position_ids, P, geom::heads, threads);
         packed_dense_attention(qbuf.data(), kbuf.data(), vbuf.data(), P, segment_length,
-                               geom::attention_scale, attended.data());
+                               geom::attention_scale, attended.data(), threads);
         std::vector<float> proj(static_cast<std::size_t>(H) * P);
         gemm(lw.out.data(), H, H, attended.data(), P, proj.data(), threads);
         add_bias(proj.data(), lw.out_bias.data(), H, P);
-        residual_add(x.data(), H, P, proj.data());
+        residual_add(x.data(), H, P, proj.data(), threads);
         // MLP.
-        layer_norm(x.data(), H, P, lw.norm2_w.data(), lw.norm2_b.data(), geom::norm_epsilon, norm.data());
+        layer_norm(x.data(), H, P, lw.norm2_w.data(), lw.norm2_b.data(), geom::norm_epsilon, norm.data(), threads);
         gemm(lw.fc1.data(), geom::intermediate, H, norm.data(), P, up.data(), threads);
         add_bias(up.data(), lw.fc1_bias.data(), geom::intermediate, P);
-        apply_gelu(up.data(), static_cast<std::size_t>(geom::intermediate) * P, /*exact=*/false);
+        apply_gelu(up.data(), static_cast<std::size_t>(geom::intermediate) * P, /*exact=*/false, threads);
         std::vector<float> down(static_cast<std::size_t>(H) * P);
         gemm(lw.fc2.data(), H, geom::intermediate, up.data(), P, down.data(), threads);
         add_bias(down.data(), lw.fc2_bias.data(), H, P);
-        residual_add(x.data(), H, P, down.data());
+        residual_add(x.data(), H, P, down.data(), threads);
     }
 
     // Merger: layer-norm, then contiguous [merger_hidden, V] view of x, fc1, gelu-exact, fc2.
     std::vector<float> normalized(static_cast<std::size_t>(H) * P);
     layer_norm(x.data(), H, P, w.merger_norm_w.data(), w.merger_norm_b.data(), geom::norm_epsilon,
-               normalized.data());
+               normalized.data(), threads);
     // `merged` is the same memory as `normalized` viewed as [merger_hidden, V].
     // The merger output projection is the variant's `TextConfig::hidden` (5120 for 27B, 2048 for
     // 35B-A3B); derive it from the dequantized `merger_fc2` rows so this core is variant-agnostic.
@@ -572,7 +680,7 @@ inline void encode(const CpuVisionWeights& w, const std::uint16_t* patches_bf16,
     gemm(w.merger_fc1.data(), geom::merger_hidden, geom::merger_hidden, normalized.data(), V,
          hidden.data(), threads);
     add_bias(hidden.data(), w.merger_fc1_bias.data(), geom::merger_hidden, V);
-    apply_gelu(hidden.data(), static_cast<std::size_t>(geom::merger_hidden) * V, /*exact=*/true);
+    apply_gelu(hidden.data(), static_cast<std::size_t>(geom::merger_hidden) * V, /*exact=*/true, threads);
     out_visible.assign(static_cast<std::size_t>(out_hidden) * V, 0.0F);
     gemm(w.merger_fc2.data(), out_hidden, geom::merger_hidden, hidden.data(), V,
          out_visible.data(), threads);

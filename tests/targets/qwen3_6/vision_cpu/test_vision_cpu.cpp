@@ -401,9 +401,68 @@ void encode_smoke(int out_hidden) {
     check("encode output is finite", finite);
 }
 
+// 5) Thread-determinism: encode() writes each output element from a reduction that depends only
+//    on that element's inputs (per-token layer-norm/attention/pos-embed, per-row gemm/rope), so
+//    the result must be bit-identical for any thread count. Guards the parallelized ops against
+//    accidental cross-thread reductions on shared outputs.
+void test_encode_determinism() {
+    constexpr std::int32_t P = 64, V = 16, seg = 64;
+    constexpr int outh = vc::geom::out_hidden;
+    vc::CpuVisionWeights w;
+    auto fill = [](std::vector<float>& v, std::size_t rows, std::size_t cols) {
+        v.assign(rows * cols, 0.01F);
+        std::mt19937 rng(7);
+        std::uniform_real_distribution<float> d(-0.01F, 0.01F);
+        for (auto& f : v) { f = d(rng); }
+    };
+    fill(w.patch_embed, vc::geom::hidden, vc::geom::patch_dim);
+    fill(w.patch_bias, vc::geom::hidden, 1);
+    fill(w.position_embedding, vc::geom::position_embeddings, vc::geom::hidden);
+    w.layers.resize(vc::geom::layers);
+    for (auto& l : w.layers) {
+        fill(l.qkv, vc::geom::qkv_out, vc::geom::hidden);
+        fill(l.out, vc::geom::hidden, vc::geom::hidden);
+        fill(l.fc1, vc::geom::intermediate, vc::geom::hidden);
+        fill(l.fc2, vc::geom::hidden, vc::geom::intermediate);
+        fill(l.norm1_w, vc::geom::hidden, 1);
+        fill(l.norm1_b, vc::geom::hidden, 1);
+        fill(l.norm2_w, vc::geom::hidden, 1);
+        fill(l.norm2_b, vc::geom::hidden, 1);
+        fill(l.qkv_bias, vc::geom::qkv_out, 1);
+        fill(l.out_bias, vc::geom::hidden, 1);
+        fill(l.fc1_bias, vc::geom::intermediate, 1);
+        fill(l.fc2_bias, vc::geom::intermediate, 1);
+    }
+    fill(w.merger_norm_w, vc::geom::hidden, 1);
+    fill(w.merger_norm_b, vc::geom::hidden, 1);
+    fill(w.merger_fc1, vc::geom::merger_hidden, vc::geom::merger_hidden);
+    fill(w.merger_fc1_bias, vc::geom::merger_hidden, 1);
+    fill(w.merger_fc2, outh, vc::geom::merger_hidden);
+    fill(w.merger_fc2_bias, outh, 1);
+
+    std::mt19937 rng(9);
+    std::uniform_real_distribution<float> patch_d(-1.0F, 1.0F);
+    std::vector<std::uint16_t> patches(static_cast<std::size_t>(P) * vc::geom::patch_dim);
+    for (auto& b : patches) { b = vc::fp::f32_to_bf16(patch_d(rng)); }
+    std::vector<std::int32_t> pos(2 * P);
+    std::uniform_int_distribution<int> u8(0, 5);
+    for (auto& p : pos) { p = u8(rng); }
+    std::vector<std::int32_t> idx(static_cast<std::size_t>(P) * 4);
+    std::uniform_int_distribution<int> uid(0, vc::geom::position_embeddings - 1);
+    for (auto& i : idx) { i = uid(rng); }
+    std::vector<float> pw(static_cast<std::size_t>(P) * 4, 0.25F);
+
+    std::vector<float> out1, out2;
+    vc::encode(w, patches.data(), pos.data(), idx.data(), pw.data(), P, seg, 1, out1);
+    vc::encode(w, patches.data(), pos.data(), idx.data(), pw.data(), P, seg, 8, out2);
+    check("encode output shape (determinism)", out1.size() == static_cast<std::size_t>(outh) * V);
+    check("encode is bit-identical across thread counts", out1 == out2);
+}
+
 void test_encode_smoke() {
     encode_smoke(vc::geom::out_hidden /* 5120, 27B */);
     encode_smoke(2048 /* 35B-A3B merger output extent */);
+    test_encode_determinism();
 }
 
 } // namespace
