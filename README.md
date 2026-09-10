@@ -7,7 +7,7 @@ Adds `--tolerant-tool-calls` for Qwen, to ensure tool calls are OpenAI compatibl
 
 Adds --vision-cpu to offload vision.  
 
-When using an NVFP4 KV cache, this allows you to reach a 450,000 context on a single 5090, with Qwen3.8-27b, while having vision enabled.
+When using an NVFP4 KV cache, this allows you to reach a 456,000 context on a single 5090, with Qwen3.8-27b, while having vision enabled.
 
 
 Example:
