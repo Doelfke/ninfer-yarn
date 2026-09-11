@@ -183,6 +183,14 @@ int main() {
         memory, environment, std::uint64_t{123456}));
     failures +=
         check(nvfp4_server.at("engine").at("kv_cache") == "nvfp4", "NVFP4 KV report name missing");
+    options.kv_cache = ninfer::KvCacheStorage::Nvfp4Group16V2;
+    engine_options.kv_cache = options.kv_cache;
+    memory.kv_cache         = options.kv_cache;
+    const Json nvfp4v2_server = Json::parse(format_server_start_json(
+        "serve-test", 1000, options, engine_options, sampling_defaults, "deployment-alias", load,
+        memory, environment, std::uint64_t{123456}));
+    failures += check(nvfp4v2_server.at("engine").at("kv_cache") == "nvfp4v2",
+                      "NVFP4v2 KV report name missing");
     options.kv_cache        = ninfer::KvCacheStorage::Fp8KeyNvfp4Value;
     engine_options.kv_cache = options.kv_cache;
     memory.kv_cache         = options.kv_cache;

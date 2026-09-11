@@ -62,6 +62,7 @@ TestCacheLayout test_cache_layout(KvCacheStorage storage) {
         return {{DType::FP8_E4M3FN, kFullHeadDim, DType::FP16, kFullFp8Groups},
                 {DType::FP8_E4M3FN, kFullHeadDim, DType::FP16, kFullFp8Groups}};
     case KvCacheStorage::Nvfp4Group16:
+    case KvCacheStorage::Nvfp4Group16V2:
         return {{DType::U8, kFullNvfp4CodeBytes, DType::U8, kFullNvfp4Groups},
                 {DType::U8, kFullNvfp4CodeBytes, DType::U8, kFullNvfp4Groups}};
     case KvCacheStorage::Fp8KeyNvfp4Value:
@@ -416,7 +417,8 @@ int full_append_case(int kv_heads, KvCacheStorage storage, int tokens = 3) {
         }
         host_v[full_input_index(0, 0, 2, kv_heads)] = 49.0f;
         host_v[full_input_index(1, 0, 2, kv_heads)] = 0.0013885498046875f;
-    } else if (storage == KvCacheStorage::Nvfp4Group16) {
+    } else if (storage == KvCacheStorage::Nvfp4Group16 ||
+               storage == KvCacheStorage::Nvfp4Group16V2) {
         for (int d = 0; d < kFullHeadDim; ++d) {
             host_k[full_input_index(d, 0, 0, kv_heads)] = 0.0f;
         }
@@ -1369,24 +1371,27 @@ int main(int argc, char** argv) {
     }
 
     const bool nvfp4_only = argc == 2 && std::string_view(argv[1]) == "--nvfp4-only";
+    const bool nvfp4v2_only = argc == 2 && std::string_view(argv[1]) == "--nvfp4v2-only";
     const bool k8v4_only  = argc == 2 && std::string_view(argv[1]) == "--k8v4-only";
-    if (argc != 1 && !nvfp4_only && !k8v4_only) {
-        std::cerr << "usage: ninfer_kv_cache_append_test [--nvfp4-only|--k8v4-only]\n";
+    if (argc != 1 && !nvfp4_only && !nvfp4v2_only && !k8v4_only) {
+        std::cerr << "usage: ninfer_kv_cache_append_test [--nvfp4-only|--nvfp4v2-only|--k8v4-only]\n";
         return 2;
     }
 
     int failures = 0;
-    if (nvfp4_only || k8v4_only) {
+    if (nvfp4_only || nvfp4v2_only || k8v4_only) {
         const KvCacheStorage storage =
-            nvfp4_only ? KvCacheStorage::Nvfp4Group16 : KvCacheStorage::Fp8KeyNvfp4Value;
+            nvfp4_only  ? KvCacheStorage::Nvfp4Group16
+            : nvfp4v2_only ? KvCacheStorage::Nvfp4Group16V2
+                           : KvCacheStorage::Fp8KeyNvfp4Value;
+        const char* tag = nvfp4_only ? "nvfp4" : (nvfp4v2_only ? "nvfp4v2" : "k8v4");
         for (const int kv_heads : {4, 2}) { failures += full_append_case(kv_heads, storage); }
         failures += full_append_case(2, storage, 129);
         if (failures != 0) {
-            std::cerr << (nvfp4_only ? "nvfp4" : "k8v4") << " kv_cache_append failures=" << failures
-                      << '\n';
+            std::cerr << tag << " kv_cache_append failures=" << failures << '\n';
             return 1;
         }
-        std::cout << (nvfp4_only ? "nvfp4" : "k8v4") << " kv_cache_append independent: PASS\n";
+        std::cout << tag << " kv_cache_append independent: PASS\n";
         return 0;
     }
 
@@ -1395,11 +1400,13 @@ int main(int argc, char** argv) {
         failures += full_append_case(kv_heads, KvCacheStorage::Int8Group64);
         failures += full_append_case(kv_heads, KvCacheStorage::Fp8E4M3Row256);
         failures += full_append_case(kv_heads, KvCacheStorage::Nvfp4Group16);
+        failures += full_append_case(kv_heads, KvCacheStorage::Nvfp4Group16V2);
         failures += full_append_case(kv_heads, KvCacheStorage::Fp8KeyNvfp4Value);
     }
     failures += full_append_case(2, KvCacheStorage::Int8Group64, 129);
     failures += full_append_case(2, KvCacheStorage::Fp8E4M3Row256, 129);
     failures += full_append_case(2, KvCacheStorage::Nvfp4Group16, 129);
+    failures += full_append_case(2, KvCacheStorage::Nvfp4Group16V2, 129);
     failures += full_append_case(2, KvCacheStorage::Fp8KeyNvfp4Value, 129);
     failures += run_case(1, 0, 0, false, {0, 1, 2});
     failures += run_case(1, 1, 63, false, {2, 3, 4});

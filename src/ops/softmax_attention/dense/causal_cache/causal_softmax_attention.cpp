@@ -359,6 +359,7 @@ CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::i
                 prompt_limit = width <= 4 ? 0 : width <= 8 ? 128 : 320;
                 break;
             case KvCacheStorage::Nvfp4Group16:
+            case KvCacheStorage::Nvfp4Group16V2:
                 prompt_limit = width <= 8 ? 0 : 256;
                 break;
             case KvCacheStorage::Fp8KeyNvfp4Value:

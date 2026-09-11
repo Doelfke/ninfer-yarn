@@ -77,6 +77,9 @@ struct PagedKVStorageLayout {
         }
         break;
     case KvCacheStorage::Nvfp4Group16:
+    case KvCacheStorage::Nvfp4Group16V2:
+        // v2 is byte-identical to nvfp4 (same packed code/scale planes); only the storage tag
+        // differs so the Prompt route can select the GQA-fused kernel.
         if (head_dim == kD256KVCacheHeadDim) { return symmetric({DType::U8, 128, DType::U8, 16}); }
         break;
     case KvCacheStorage::Fp8KeyNvfp4Value:

@@ -87,13 +87,18 @@ int main() {
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-dtype", "nvfp4"});
     failures += check(nvfp4.kv_cache == ninfer::KvCacheStorage::Nvfp4Group16,
                       "--kv-dtype nvfp4 did not select group-16 NVFP4 KV");
+    const ninfer::cli::Options nvfp4v2 =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-dtype", "nvfp4v2"});
+    failures += check(nvfp4v2.kv_cache == ninfer::KvCacheStorage::Nvfp4Group16V2,
+                      "--kv-dtype nvfp4v2 did not select the GQA-fused NVFP4 KV variant");
     const ninfer::cli::Options k8v4 =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-dtype", "k8v4"});
     failures += check(k8v4.kv_cache == ninfer::KvCacheStorage::Fp8KeyNvfp4Value,
                       "--kv-dtype k8v4 did not select asymmetric K8V4 KV");
     const std::string help = ninfer::cli::usage_text("ninfer-cli");
     failures +=
-        check(help.find("nvfp4") != std::string::npos && help.find("k8v4") != std::string::npos,
+        check(help.find("nvfp4") != std::string::npos && help.find("nvfp4v2") != std::string::npos &&
+                  help.find("k8v4") != std::string::npos,
               "CLI help omits a production KV storage mode");
     const ninfer::cli::Options logging =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--log-level", "debug"});

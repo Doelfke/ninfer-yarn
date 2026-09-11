@@ -93,6 +93,7 @@ TestCacheLayout test_cache_layout(KvCacheStorage storage) {
         return {{DType::FP8_E4M3FN, kHeadDim, DType::FP16, kFp8QuantGroups},
                 {DType::FP8_E4M3FN, kHeadDim, DType::FP16, kFp8QuantGroups}};
     case KvCacheStorage::Nvfp4Group16:
+    case KvCacheStorage::Nvfp4Group16V2:
         return {{DType::U8, kNvfp4CodeBytes, DType::U8, kNvfp4QuantGroups},
                 {DType::U8, kNvfp4CodeBytes, DType::U8, kNvfp4QuantGroups}};
     case KvCacheStorage::Fp8KeyNvfp4Value:
@@ -656,7 +657,7 @@ HostCache make_cache(const Geometry& geometry, KvCacheStorage storage, std::int3
         return cache;
     }
 
-    if (storage == KvCacheStorage::Nvfp4Group16) {
+    if (storage == KvCacheStorage::Nvfp4Group16 || storage == KvCacheStorage::Nvfp4Group16V2) {
         const std::size_t code_elements =
             static_cast<std::size_t>(kNvfp4CodeBytes) * logical_capacity * geometry.kv_heads;
         const std::size_t scale_elements =
@@ -777,7 +778,8 @@ void append_cache(HostCache& cache, const std::vector<float>& k, const std::vect
             const std::size_t source = kv_input_index(geometry, head, 0, token);
             const std::size_t target =
                 cache_index(geometry, cache.logical_capacity, head, position, 0);
-            if (cache.storage == KvCacheStorage::Nvfp4Group16) {
+            if (cache.storage == KvCacheStorage::Nvfp4Group16 ||
+                cache.storage == KvCacheStorage::Nvfp4Group16V2) {
                 const std::size_t code = logical_plane_index(
                     kNvfp4CodeBytes, geometry, cache.logical_capacity, head, position, 0);
                 const std::size_t scale = logical_plane_index(
@@ -860,6 +862,7 @@ std::vector<double> ideal_attention(const std::vector<float>& q, const HostCache
     const int tokens = positions.size(), visible = positions.back() + 1;
     const bool rotate_q = cache.storage != KvCacheStorage::BFloat16;
     const bool rotate_v = cache.storage == KvCacheStorage::Nvfp4Group16 ||
+                          cache.storage == KvCacheStorage::Nvfp4Group16V2 ||
                           cache.storage == KvCacheStorage::Fp8KeyNvfp4Value;
     std::vector<double> query(q.begin(), q.end()), output(q.size());
     if (rotate_q)
@@ -1001,6 +1004,7 @@ public:
             k_scale_.copy_from_host(ks_physical.data(), ks_physical.size() * sizeof(std::uint16_t));
             v_scale_.copy_from_host(vs_physical.data(), vs_physical.size());
         } else {
+            // Nvfp4Group16 and Nvfp4Group16V2 are byte-identical: the else branch is shared.
             const auto k_physical =
                 scatter_paged(cache.k_nvfp4, kNvfp4CodeBytes, geometry_, logical_capacity_,
                               block_table_host_, physical_pages_);
@@ -1644,6 +1648,8 @@ const char* cache_name(KvCacheStorage storage) {
         return "fp8-e4m3fn-row256";
     case KvCacheStorage::Nvfp4Group16:
         return "nvfp4-g16";
+    case KvCacheStorage::Nvfp4Group16V2:
+        return "nvfp4-g16v2";
     case KvCacheStorage::Fp8KeyNvfp4Value:
         return "k8v4";
     }
@@ -1654,7 +1660,9 @@ ReductionCriterion attention_criterion(KvCacheStorage storage) {
     if (storage == KvCacheStorage::BFloat16) return kAttentionBf16Criterion;
     if (storage == KvCacheStorage::Int8Group64) return kAttentionInt8Criterion;
     if (storage == KvCacheStorage::Fp8E4M3Row256) return kAttentionFp8Criterion;
-    if (storage == KvCacheStorage::Nvfp4Group16) return kAttentionNvfp4Criterion;
+    if (storage == KvCacheStorage::Nvfp4Group16 ||
+        storage == KvCacheStorage::Nvfp4Group16V2)
+        return kAttentionNvfp4Criterion;
     if (storage == KvCacheStorage::Fp8KeyNvfp4Value) return kAttentionK8V4Criterion;
     throw std::logic_error("unregistered causal-attention test storage");
 }
@@ -1792,8 +1800,10 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     failures += verify_cache(label, cache.snapshot(), expected,
                              storage == KvCacheStorage::BFloat16 ||
                                  storage == KvCacheStorage::Nvfp4Group16 ||
+                                 storage == KvCacheStorage::Nvfp4Group16V2 ||
                                  storage == KvCacheStorage::Fp8KeyNvfp4Value);
-    if (storage == KvCacheStorage::Nvfp4Group16 || storage == KvCacheStorage::Fp8KeyNvfp4Value) {
+    if (storage == KvCacheStorage::Nvfp4Group16 || storage == KvCacheStorage::Nvfp4Group16V2 ||
+        storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         DeviceCache standalone(initial, mapping);
         ops::kv_cache_append(tk, tv, tp, standalone.view(), nullptr);
         cuda_synchronize();
@@ -2151,7 +2161,8 @@ int run_quantized_batch_cases(KvCacheStorage storage, std::uint32_t seed) {
                                 {7, 0, 5, 2, 6, 1, 4, 3},
                                 MappingPattern::Fragmented,
                                 seed + 3u});
-    if (storage == KvCacheStorage::Nvfp4Group16) {
+    if (storage == KvCacheStorage::Nvfp4Group16 ||
+        storage == KvCacheStorage::Nvfp4Group16V2) {
         failures += run_batch_case(kGeometries[0], storage,
                                    {12,
                                     {0, 17, 61, 127, 0, 128, 63, 31},
@@ -2169,7 +2180,8 @@ int run_dflash2_cases() {
     int failures = 0;
     for (auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
-          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Nvfp4Group16V2,
+          KvCacheStorage::Fp8KeyNvfp4Value}) {
         const auto run = [&](int width, int batch, int base, bool graph) {
             BatchAttentionCase c{width,
                                  {},
@@ -2213,7 +2225,8 @@ int run_batch_cases() {
     int failures = 0;
     for (auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
-          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Nvfp4Group16V2,
+          KvCacheStorage::Fp8KeyNvfp4Value}) {
         failures += run_batch_case(kGeometries[0], storage,
                                    {16, {0}, {0}, {0}, MappingPattern::Fragmented, 1501u});
         failures += run_batch_case(kGeometries[0], storage,
@@ -2306,48 +2319,137 @@ int run_fp8_cases() {
     return failures;
 }
 
-int run_nvfp4_cases() {
+// Shared by the nvfp4 and the byte-identical nvfp4v2 storage. The wide-query cases
+// ({64, 0, ...}, {65, 63, ...}, tokens > kMaximumVerifyTokens) reach the Prompt route for both
+// geometries, which is where nvfp4v2 dispatches to the GQA-fused kernel. The {1, 2048, ...} A3
+// case exercises the Prompt route's long-prefix tile loop at a nonzero absolute position.
+int run_prompt_storage_cases(KvCacheStorage storage, std::uint32_t seed_base) {
     int failures = 0;
     for (const Geometry& geometry : kGeometries) {
-        failures += run_a1_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 0, 1, 701u},
+        failures += run_a1_case(geometry, storage, {1, 0, 1, seed_base + 1}, MappingPattern::Identity);
+        failures += run_a3_case(geometry, storage, {1, 64, 65, seed_base + 2}, MappingPattern::Fragmented);
+        failures += run_a3_case(geometry, storage, {1, 32, 33, seed_base + 7, true}, MappingPattern::Identity);
+        failures += run_a3_case(geometry, storage, {1, 1, 2, seed_base + 8, true}, MappingPattern::Identity);
+        failures += run_a3_case(geometry, storage, {1, 7, 8, seed_base + 9, true}, MappingPattern::Identity);
+        failures += run_a3_case(geometry, storage, {1, 15, 16, seed_base + 10, true}, MappingPattern::Identity);
+        failures += run_a3_case(geometry, storage, {1, 31, 32, seed_base + 11, true},
                                 MappingPattern::Identity);
-        failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 64, 65, 702u},
-                                MappingPattern::Fragmented);
-        failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 32, 33, 707u, true},
-                                MappingPattern::Identity);
-        failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 1, 2, 708u, true},
-                                MappingPattern::Identity);
-        failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 7, 8, 709u, true},
-                                MappingPattern::Identity);
-        failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 15, 16, 710u, true},
-                                MappingPattern::Identity);
-        failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 31, 32, 711u, true},
-                                MappingPattern::Identity);
-        failures += run_a1_case(geometry, KvCacheStorage::Nvfp4Group16, {6, 61, 192, 703u},
-                                MappingPattern::Fragmented);
-        failures += run_a1_case(geometry, KvCacheStorage::Nvfp4Group16, {64, 0, 128, 704u},
-                                MappingPattern::Fragmented);
-        failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {65, 63, 192, 705u},
-                                MappingPattern::Offset);
-        failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 2048, 2049, 706u},
+        failures += run_a1_case(geometry, storage, {6, 61, 192, seed_base + 3}, MappingPattern::Fragmented);
+        failures += run_a1_case(geometry, storage, {64, 0, 128, seed_base + 4}, MappingPattern::Fragmented);
+        failures += run_a3_case(geometry, storage, {65, 63, 192, seed_base + 5}, MappingPattern::Offset);
+        failures += run_a3_case(geometry, storage, {1, 2048, 2049, seed_base + 6},
                                 MappingPattern::Fragmented);
     }
-    failures += run_a1_case(kGeometries[0], KvCacheStorage::Nvfp4Group16,
-                            {1, 64, 65, 712u, false, true}, MappingPattern::Fragmented);
-    failures += run_a3_case(kGeometries[0], KvCacheStorage::Nvfp4Group16,
-                            {1, 64, 65, 713u, false, true}, MappingPattern::Fragmented);
-    failures += run_a1_case(kGeometries[1], KvCacheStorage::Nvfp4Group16, {5, 17, 22, 714u},
+    failures += run_a1_case(kGeometries[0], storage, {1, 64, 65, seed_base + 12, false, true},
+                            MappingPattern::Fragmented);
+    failures += run_a3_case(kGeometries[0], storage, {1, 64, 65, seed_base + 13, false, true},
+                            MappingPattern::Fragmented);
+    failures += run_a1_case(kGeometries[1], storage, {5, 17, 22, seed_base + 14},
                             MappingPattern::Identity);
-    failures += run_a1_case(kGeometries[1], KvCacheStorage::Nvfp4Group16, {7, 17, 24, 715u},
+    failures += run_a1_case(kGeometries[1], storage, {7, 17, 24, seed_base + 15},
                             MappingPattern::Identity);
-    failures += run_a1_case(kGeometries[1], KvCacheStorage::Nvfp4Group16, {7, 511, 518, 716u},
+    failures += run_a1_case(kGeometries[1], storage, {7, 511, 518, seed_base + 16},
                             MappingPattern::Fragmented);
-    failures += run_a3_case(kGeometries[1], KvCacheStorage::Nvfp4Group16, {1, 8191, 8192, 717u},
+    failures += run_a3_case(kGeometries[1], storage, {1, 8191, 8192, seed_base + 17},
                             MappingPattern::Fragmented);
-    failures += run_a3_case(kGeometries[1], KvCacheStorage::Nvfp4Group16, {1, 16383, 16384, 718u},
+    failures += run_a3_case(kGeometries[1], storage, {1, 16383, 16384, seed_base + 18},
                             MappingPattern::Fragmented);
-    failures += run_a3_case(kGeometries[1], KvCacheStorage::Nvfp4Group16, {1, 65535, 65536, 719u},
+    failures += run_a3_case(kGeometries[1], storage, {1, 65535, 65536, seed_base + 19},
                             MappingPattern::Fragmented);
+    return failures;
+}
+
+int run_nvfp4_cases() { return run_prompt_storage_cases(KvCacheStorage::Nvfp4Group16, 700); }
+
+int run_nvfp4v2_cases() { return run_prompt_storage_cases(KvCacheStorage::Nvfp4Group16V2, 900); }
+
+// Bit-parity (the "no quality change" contract): run the existing per-query-head nvfp4 prompt
+// kernel and the GQA-fused nvfp4v2 prompt kernel over identical inputs and require the bf16
+// outputs to be bitwise equal. Wider than the tolerance oracle by construction — it locks the
+// claim that folding the G-group into one CTA changes no numeric result.
+int run_nvfp4v2_bit_parity() {
+    struct ParityShape {
+        std::int32_t tokens;
+        std::int32_t base;
+    };
+    const std::vector<ParityShape> shapes{
+        {64, 0}, {64, 127}, {64, 2048}, {65, 0}, {65, 63},
+    };
+    int failures = 0;
+    std::uint32_t seed = 1000u;
+    for (const Geometry& geometry : kGeometries) {
+        for (const ParityShape& shape : shapes) {
+            const std::int32_t total       = shape.base + shape.tokens;
+            const std::int32_t max_context = std::max(shape.base + shape.tokens + 3, 256);
+            const std::size_t    q_elements =
+                static_cast<std::size_t>(kHeadDim) * geometry.q_heads * shape.tokens;
+            const std::vector<float>  q = make_bf16_values(q_elements, seed, -0.25f, 0.25f);
+            const std::vector<std::uint16_t> q_bits = to_bf16_bits(q);
+            const ops::CausalAttentionExecutionEnvelope envelope{static_cast<std::uint32_t>(total),
+                                                                 static_cast<std::uint32_t>(total)};
+
+            const HostCache host_nvfp4 = make_cache(geometry, KvCacheStorage::Nvfp4Group16,
+                                                    max_context, seed + 10u);
+            const HostCache host_v2    = make_cache(geometry, KvCacheStorage::Nvfp4Group16V2,
+                                                    max_context, seed + 10u);
+            const DeviceCache cache_nvfp4(host_nvfp4, MappingPattern::Offset);
+            const DeviceCache cache_v2(host_v2, MappingPattern::Offset);
+
+            const std::vector<std::int32_t> positions(shape.tokens);
+            for (int t = 0; t < shape.tokens; ++t) positions[t] = shape.base + t;
+            const std::size_t out_elements = q_bits.size();
+            const std::size_t workspace_bytes = ops::causal_softmax_attention_workspace_capacity_bytes(
+                op_geometry(geometry), KvCacheStorage::Nvfp4Group16, envelope, 1,
+                shape.tokens, shape.tokens);
+            const std::size_t min_workspace = std::max<std::size_t>(workspace_bytes, 256);
+
+            auto run_route = [&](const PagedKVLayerView& view) {
+                GuardedDeviceBuffer dq(q_bits.size() * sizeof(std::uint16_t));
+                GuardedDeviceBuffer dp(positions.size() * sizeof(std::int32_t));
+                GuardedDeviceBuffer dout(out_elements * sizeof(std::uint16_t));
+                GuardedDeviceBuffer workspace(min_workspace);
+                dq.copy_from_host(q_bits.data(), q_bits.size() * sizeof(std::uint16_t));
+                dp.copy_from_host(positions.data(), positions.size() * sizeof(std::int32_t));
+                const std::vector<std::uint16_t> output_canary(out_elements, kOutputCanary);
+                dout.copy_from_host(output_canary.data(), output_canary.size() *
+                                                                   sizeof(std::uint16_t));
+                Tensor tq(dq.data(), DType::BF16, {kHeadDim, geometry.q_heads, shape.tokens});
+                Tensor tp(dp.data(), DType::I32, {shape.tokens});
+                Tensor tout(dout.data(), DType::BF16, {kHeadDim, geometry.q_heads, shape.tokens});
+                WorkspaceArena wa(DeviceSpan{workspace.data(), workspace.bytes()});
+                ops::causal_softmax_attention_cached(tq, tp, op_geometry(geometry), kAttentionScale,
+                                                     view, envelope, wa, tout, nullptr);
+                cuda_synchronize();
+                return copy_from_guarded<std::uint16_t>(dout, out_elements);
+            };
+
+            const std::vector<std::uint16_t> out_nvfp4 = run_route(cache_nvfp4.view());
+            const std::vector<std::uint16_t> out_v2    = run_route(cache_v2.view());
+            const std::string label = "nvfp4v2 bit-parity " + std::string(geometry.name) +
+                                      " T=" + std::to_string(shape.tokens) +
+                                      " base=" + std::to_string(shape.base);
+            bool bitwise = out_nvfp4.size() == out_v2.size();
+            std::size_t first_diff = 0;
+            for (std::size_t i = 0; bitwise && i < out_nvfp4.size(); ++i) {
+                if (out_nvfp4[i] != out_v2[i]) { bitwise = false; first_diff = i; }
+            }
+            if (!bitwise) {
+                std::cerr << label << ": nvfp4v2 prompt output diverges from nvfp4 at element "
+                          << first_diff << " (nvfp4=" << out_nvfp4.at(first_diff)
+                          << ", v2=" << out_v2.at(first_diff) << ")\n";
+                ++failures;
+            }
+            if (cache_nvfp4.snapshot().k_nvfp4 != host_nvfp4.k_nvfp4) {
+                std::cerr << label << ": nvfp4 cache bytes changed\n";
+                ++failures;
+            }
+            if (cache_v2.snapshot().k_nvfp4 != host_v2.k_nvfp4) {
+                std::cerr << label << ": nvfp4v2 cache bytes changed\n";
+                ++failures;
+            }
+            ++seed;
+        }
+    }
     return failures;
 }
 
@@ -2390,7 +2492,8 @@ int verify_workspace_capacity_contract() {
     int failures = 0;
     for (const KvCacheStorage storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
-          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Nvfp4Group16V2,
+          KvCacheStorage::Fp8KeyNvfp4Value}) {
         constexpr ops::CausalAttentionExecutionEnvelope envelope{1, 1025};
         constexpr ops::AttentionHeadGeometry geometry{kHeadDim, 16, 2};
         const std::size_t interval = ops::causal_softmax_attention_workspace_capacity_bytes(
@@ -2438,6 +2541,19 @@ int run_softmax_attention_nvfp4_tests() {
     return failures == 0 ? 0 : 1;
 }
 
+int run_softmax_attention_nvfp4v2_tests() {
+    if (cuda_unavailable()) {
+        std::cout << "SKIP: no usable CUDA device\n";
+        return 77;
+    }
+    int failures = run_nvfp4v2_cases();
+    failures += run_quantized_batch_cases(KvCacheStorage::Nvfp4Group16V2, 900u);
+    failures += run_nvfp4v2_bit_parity();
+    std::cout << (failures == 0 ? "PASS" : "FAIL")
+              << " causal_softmax_attention nvfp4v2 independence + bit-parity\n";
+    return failures == 0 ? 0 : 1;
+}
+
 int run_softmax_attention_k8v4_tests() {
     if (cuda_unavailable()) {
         std::cout << "SKIP: no usable CUDA device\n";
@@ -2461,6 +2577,11 @@ int run_softmax_attention_causal_cache_tests() {
     failures += run_nvfp4_cases();
     failures += run_quantized_batch_cases(KvCacheStorage::Nvfp4Group16, 720u);
     failures += report_quantization_quality(KvCacheStorage::Nvfp4Group16, 724u);
+    // GQA-fused NVFP4 prompt route: reuse the nvfp4 oracle (byte-identical cache, same layout)
+    // plus the bitwise-equal nvfp4/nvfp4v2 parity check (the "no quality change" contract).
+    failures += run_nvfp4v2_cases();
+    failures += run_quantized_batch_cases(KvCacheStorage::Nvfp4Group16V2, 900u);
+    failures += run_nvfp4v2_bit_parity();
     failures += run_k8v4_cases();
     failures += run_quantized_batch_cases(KvCacheStorage::Fp8KeyNvfp4Value, 815u);
     failures += report_quantization_quality(KvCacheStorage::Fp8KeyNvfp4Value, 819u);

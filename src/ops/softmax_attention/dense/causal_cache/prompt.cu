@@ -72,6 +72,10 @@ void causal_attention_prompt_attention_launch(const Tensor& q, const Tensor& pos
         causal_attention_prompt_nvfp4_attention_launch(q, positions, scale, cache, out, stream);
         return;
     }
+    if (cache.storage == KvCacheStorage::Nvfp4Group16V2) {
+        causal_attention_prompt_nvfp4v2_attention_launch(q, positions, scale, cache, out, stream);
+        return;
+    }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
         causal_attention_prompt_fp8_attention_launch(q, positions, scale, cache, out, stream);
         return;
@@ -98,6 +102,11 @@ void causal_attention_prompt_launch(const Tensor& q, const Tensor& k, const Tens
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {
         causal_attention_prompt_nvfp4_launch(q, k, v, positions, valid_columns, table_rows, scale,
                                              cache, out, stream);
+        return;
+    }
+    if (cache.storage == KvCacheStorage::Nvfp4Group16V2) {
+        causal_attention_prompt_nvfp4v2_launch(q, k, v, positions, valid_columns, table_rows,
+                                               scale, cache, out, stream);
         return;
     }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {

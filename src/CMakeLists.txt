@@ -53,7 +53,8 @@ target_link_libraries(ninfer_artifact PUBLIC ninfer_core)
 add_library(ninfer_nvfp4_non_rdc STATIC
   ops/linear/nvfp4/nvfp4_w4a4_tma.cu
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_w4a4_tma.cu
-  ops/softmax_attention/dense/causal_cache/prompt_nvfp4_non_rdc.cu)
+  ops/softmax_attention/dense/causal_cache/prompt_nvfp4_non_rdc.cu
+  ops/softmax_attention/dense/causal_cache/prompt_nvfp4v2_non_rdc.cu)
 ninfer_internal_includes(ninfer_nvfp4_non_rdc)
 set_target_properties(ninfer_nvfp4_non_rdc PROPERTIES
   CUDA_SEPARABLE_COMPILATION OFF
@@ -105,6 +106,7 @@ add_library(ninfer_ops STATIC
   ops/softmax_attention/dense/causal_cache/prompt.cu
   ops/softmax_attention/dense/causal_cache/prompt_fp8.cu
   ops/softmax_attention/dense/causal_cache/prompt_nvfp4.cu
+  ops/softmax_attention/dense/causal_cache/prompt_nvfp4v2.cu
   ops/softmax_attention/dense/causal_cache/prompt_k8v4.cu
   ops/softmax_attention/dense/packed/packed_softmax_attention.cpp
   ops/softmax_attention/dense/packed/launch.cu

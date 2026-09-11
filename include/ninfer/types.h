@@ -33,6 +33,9 @@ enum class KvCacheStorage : std::uint8_t {
     Fp8E4M3Row256,
     Nvfp4Group16,
     Fp8KeyNvfp4Value,
+    // Byte-identical NVFP4 KV cache read with a GQA-fused wide-prompt attention route. Existing
+    // nvfp4 artifacts are directly usable; only the Prompt route dispatches to the v2 kernel.
+    Nvfp4Group16V2,
 };
 
 enum class EnginePurpose : std::uint8_t {

@@ -248,7 +248,8 @@ std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t 
                     narrow || batch_size >= 5 || envelope.max_visible_keys > 4096 ? 320 : 160;
             else if (cache_storage == KvCacheStorage::Int8Group64)
                 target_ctas = narrow || envelope.max_visible_keys > 4096 ? 320 : 160;
-            else if (cache_storage == KvCacheStorage::Nvfp4Group16)
+            else if (cache_storage == KvCacheStorage::Nvfp4Group16 ||
+                     cache_storage == KvCacheStorage::Nvfp4Group16V2)
                 target_ctas = narrow ? 320 : 160;
             const int grid_limit = div_up(target_ctas, 4 * batch_size);
             // A split stages at most 64 physical-page IDs. Leave two 64-key pages for
@@ -398,7 +399,8 @@ void causal_attention_small_t_launch(
                                             partial_l, out, stream);
         return;
     }
-    if (cache.storage == KvCacheStorage::Nvfp4Group16) {
+    if (cache.storage == KvCacheStorage::Nvfp4Group16 ||
+        cache.storage == KvCacheStorage::Nvfp4Group16V2) {
         causal_attention_small_t_nvfp4_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
                                               envelope, column_begin, width, partial_acc, partial_m,
                                               partial_l, out, stream);
@@ -440,7 +442,8 @@ void causal_attention_cached_small_t_launch(const Tensor& q, const Tensor& pos, 
                                                    partial_m, partial_l, out, stream);
         return;
     }
-    if (cache.storage == KvCacheStorage::Nvfp4Group16) {
+    if (cache.storage == KvCacheStorage::Nvfp4Group16 ||
+        cache.storage == KvCacheStorage::Nvfp4Group16V2) {
         causal_attention_cached_small_t_nvfp4_launch(q, pos, scale, cache, envelope, partial_acc,
                                                      partial_m, partial_l, out, stream);
         return;

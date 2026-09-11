@@ -191,7 +191,8 @@ void kv_cache_append_batch_launch(const Tensor& k, const Tensor& v, const Tensor
                                           stream);
         return;
     }
-    if (cache.storage == KvCacheStorage::Nvfp4Group16) {
+    if (cache.storage == KvCacheStorage::Nvfp4Group16 ||
+        cache.storage == KvCacheStorage::Nvfp4Group16V2) {
         kv_cache_append_nvfp4_batch_launch(k, v, positions, valid_columns, table_rows, cache,
                                            stream);
         return;

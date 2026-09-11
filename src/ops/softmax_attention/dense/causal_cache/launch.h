@@ -114,6 +114,18 @@ void causal_attention_prompt_nvfp4_attention_launch(const Tensor& q, const Tenso
                                                     float scale, const PagedKVLayerView& cache,
                                                     Tensor& out, cudaStream_t stream);
 
+// GQA-fused NVFP4 prompt route (storage Nvfp4Group16V2): one CTA per (query-block, kv_head)
+// decode-KV-once variant of the nvfp4 prompt kernel. Append path is identical to nvfp4.
+void causal_attention_prompt_nvfp4v2_launch(const Tensor& q, const Tensor& k, const Tensor& v,
+                                            const Tensor& positions, const Tensor& valid_columns,
+                                            const Tensor& table_rows, float scale,
+                                            PagedKVBatchLayerView cache, Tensor& out,
+                                            cudaStream_t stream);
+
+void causal_attention_prompt_nvfp4v2_attention_launch(const Tensor& q, const Tensor& positions,
+                                                      float scale, const PagedKVLayerView& cache,
+                                                      Tensor& out, cudaStream_t stream);
+
 void causal_attention_prompt_k8v4_launch(const Tensor& q, const Tensor& k, const Tensor& v,
                                          const Tensor& positions, const Tensor& valid_columns,
                                          const Tensor& table_rows, float scale,
