@@ -323,7 +323,10 @@ FIFO head 暂时受 active incumbents 阻塞时，Scheduler 记录 protected hea
 
 Scheduler 保证：
 
-- 同时最多一个 staged-prefill request；
+- staged prefill 按 lane 持有，多个 request 可以同时处于 staged-prefill 状态；prefill unit
+  每次 worker boundary 只推进一个 lane 的一个 chunk，lane 在其 staged prefill 完成、settle
+  或 cancel 时从集合中清除。Prefill 不持有 resource transaction，因此 admission 可以在其它
+  request prefill 期间进行（仍受 open global topology transition 与 decode 连续性的门控）；
 - 已有 decode work 不会被连续 prefill 饿死；
 - decode round 包含所有且仅包含当前 decode-ready requests；
 - batch 使用精确 `B`，不以 inactive lane padding 到 `max_concurrency`。
@@ -337,7 +340,9 @@ prefill，不创建另一条调度路径。
 
 - waiting queue 或 FIFO head 变化；
 - lane 释放；
-- staged-prefill gate 变化；
+- staged-prefill lane 集合变化（prefill 完成、staged lane 进入 terminal 或 cancel 均会清除对应
+  lane；每个 prefill unit 边界本身也是 admission 检查点，使等待中的新 request 可以进入空闲
+  lane 与其它 request 的 prefill 重叠）；
 - resource transition 到达终态；
 - Program 的全局资源 revision 变化。
 

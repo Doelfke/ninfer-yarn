@@ -5,6 +5,7 @@
 #include "runtime/engine/admission_policy.h"
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -230,10 +231,16 @@ public:
         request.remaining_service_work -= work;
     }
 
+    // A staged prefill does not hold a resource transaction: materialization has already
+    // committed the destination lane's full execution reservation, and prefill units are
+    // interleaved one chunk per worker boundary. Admission is therefore allowed while other
+    // requests prefill; it stays gated by any open global resource topology transition
+    // (context_transaction) and by decode continuity (existing decode is never starved by
+    // admission work).
     [[nodiscard]] bool should_attempt_admission(bool have_pending, bool admission_check_pending,
                                                 bool have_decode, bool previous_unit_was_decode,
                                                 bool context_transaction) const noexcept {
-        return have_pending && admission_check_pending && !context_transaction && !prefill_lane_ &&
+        return have_pending && admission_check_pending && !context_transaction &&
                (!have_decode || previous_unit_was_decode);
     }
 
@@ -246,8 +253,44 @@ public:
         return have_decode ? ExecutionAction::Decode : ExecutionAction::Wait;
     }
 
-    [[nodiscard]] std::optional<std::uint32_t> prefill_lane() const noexcept {
-        return prefill_lane_;
+    // Staged prefill ownership is a per-lane mask: a request stays in the set until its
+    // staged prefill completes, is settled in terminal state, or is cancelled. Multiple
+    // requests may prefill simultaneously (prefill is incremental per worker boundary and
+    // holds no resource transaction).
+    [[nodiscard]] std::uint64_t prefill_lane_mask() const noexcept { return prefill_lanes_; }
+
+    [[nodiscard]] bool owns_prefill_lane(std::uint32_t lane) const noexcept {
+        return lane < kMaximumConcurrency &&
+               (prefill_lanes_ & (1ULL << lane)) != 0;
+    }
+
+    [[nodiscard]] bool has_prefill_lane() const noexcept { return prefill_lanes_ != 0; }
+
+    // Deterministic execution order: lowest lane index first. Prefill units are short
+    // (one chunk), so strictly round-robining by index gives every staged request a fair
+    // share of the single execution stream without tracking per-lane progress.
+    [[nodiscard]] std::optional<std::uint32_t> select_prefill_lane() const noexcept {
+        if (prefill_lanes_ == 0) { return std::nullopt; }
+        return static_cast<std::uint32_t>(std::countr_zero(prefill_lanes_));
+    }
+
+    // Lowest lane index owning staged prefill that is ready to advance. A lane that is
+    // temporarily offering an active capture (capture_pending) is skipped so a pending
+    // transaction on one lane cannot starve prefill on the others.
+    template <class Slots>
+    [[nodiscard]] std::optional<std::uint32_t>
+    select_runnable_prefill_lane(std::uint32_t max_concurrency, const Slots& slots) const {
+        std::uint64_t mask = prefill_lanes_;
+        while (mask != 0) {
+            const std::uint32_t lane = static_cast<std::uint32_t>(std::countr_zero(mask));
+            mask &= mask - 1U;
+            if (lane >= max_concurrency || slots[lane] == nullptr ||
+                slots[lane]->capture_pending) {
+                continue;
+            }
+            return lane;
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] std::optional<std::uint64_t> protection_epoch() const noexcept {
@@ -255,15 +298,17 @@ public:
     }
 
     void set_prefill_lane(std::uint32_t lane) {
-        if (prefill_lane_) { throw std::logic_error("multiple requests own staged prefill"); }
-        prefill_lane_ = lane;
+        if (lane >= kMaximumConcurrency) {
+            throw std::logic_error("staged prefill lane exceeds the fixed concurrency bound");
+        }
+        prefill_lanes_ |= 1ULL << lane;
     }
 
     void clear_prefill_lane(std::uint32_t lane) {
-        if (!prefill_lane_ || *prefill_lane_ != lane) {
+        if (lane >= kMaximumConcurrency || (prefill_lanes_ & (1ULL << lane)) == 0) {
             throw std::logic_error("request does not own staged prefill");
         }
-        prefill_lane_.reset();
+        prefill_lanes_ &= ~(1ULL << lane);
     }
 
     void observe_fifo_head(std::optional<std::uint64_t> request_id) noexcept {
@@ -354,13 +399,13 @@ public:
     }
 
     void reset() noexcept {
-        prefill_lane_.reset();
+        prefill_lanes_ = 0;
         fifo_head_id_.reset();
         protection_.reset();
     }
 
 private:
-    std::optional<std::uint32_t> prefill_lane_;
+    std::uint64_t prefill_lanes_ = 0;  // bit i set when lane i owns staged prefill
     std::optional<std::uint64_t> fifo_head_id_;
     std::optional<AdmissionProtection> protection_;
     std::uint64_t next_protection_epoch_ = 1;

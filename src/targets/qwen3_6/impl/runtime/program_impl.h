@@ -12167,7 +12167,9 @@ ProgramImplCore::decode_dflash_batch(std::span<const std::uint32_t> lanes,
             for (std::uint32_t column = 0; column < width; ++column) {
                 const std::uint32_t position = frontier + std::min(column, extent);
                 dflash_host_ingress->target_rope_positions[row * width + column] =
-                    checked_i32(position, "DFlash target RoPE position") + sequence.rope_delta;
+                    yarn_scale_position(checked_i32(position, "DFlash target RoPE position") +
+                                        sequence.rope_delta,
+                                        rope_scaling_original_context, rope_scaling_factor);
             }
             dflash_host_ingress->text_kv_table_rows[row] =
                 text_kv_addresses->bound_row(sequence.kv->text);

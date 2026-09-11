@@ -940,9 +940,12 @@ raw counters and seconds over rounded stderr rates.
 
 The server owns one resident Engine with a startup-fixed capacity of `1..8` active generation
 requests. At each decode boundary, every decode-ready request is compacted into one batch and
-processed by one model traversal and, when graphs are enabled, one exact-batch CUDA Graph replay. A
-request joins that batch only after its single-request prefill finishes; when it completes or is
-cancelled, the next boundary rebuilds the batch without an empty row.
+processed by one model traversal and, when graphs are enabled, one exact-batch CUDA Graph replay.
+A request joins that batch only after its staged prefill finishes; while other requests are
+prefilling, waiting requests may still be admitted to free lanes, so prefill of one request can
+overlap the prefill and decode of the others (each prefill unit advances exactly one staged lane
+per worker boundary). When a request completes or is cancelled, the next boundary rebuilds the
+batch without an empty row.
 
 `--max-pending-requests` bounds the requests waiting behind the active set. The total generation
 request lifetime capacity is `max_concurrency + max_pending_requests`, including requests still in

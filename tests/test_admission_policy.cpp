@@ -182,11 +182,55 @@ int main() {
                       "admission and GPU-unit fairness gates changed");
     scheduler.set_prefill_lane(0);
     failures +=
-        check(!scheduler.should_attempt_admission(true, true, true, true, false) &&
+        check(scheduler.owns_prefill_lane(0) && scheduler.select_prefill_lane() == std::optional(0U) &&
+                  scheduler.should_attempt_admission(true, true, true, true, false) &&
+                  !scheduler.should_attempt_admission(true, true, true, false, false) &&
+                  !scheduler.should_attempt_admission(true, true, true, true, true) &&
                   scheduler.choose_execution(true, true, false) == ExecutionAction::Decode &&
                   scheduler.choose_execution(true, true, true) == ExecutionAction::Prefill,
               "prefill/decode alternation changed");
+    // Multiple requests may own staged prefill simultaneously; admission stays open while
+    // any of them prefill (each unit advances one lane), but an open global topology
+    // transition still gates it.
+    scheduler.set_prefill_lane(2);
+    failures += check(scheduler.prefill_lane_mask() == (1ULL | (1ULL << 2)) &&
+                          scheduler.select_prefill_lane() == std::optional(0U) &&
+                          scheduler.has_prefill_lane(),
+                      "parallel staged-prefill ownership changed");
+    scheduler.clear_prefill_lane(2);
+    failures += check(scheduler.select_prefill_lane() == std::optional(0U),
+                      "lowest staged-prefill lane selection changed");
+    scheduler.set_prefill_lane(1);
+    scheduler.set_prefill_lane(2);
+    {
+        std::array<std::shared_ptr<SchedulerRequest>, 3> slots{};
+        slots[1]   = std::make_shared<SchedulerRequest>();
+        slots[2]   = std::make_shared<SchedulerRequest>();
+        slots[1]->capture_pending = true;
+        failures +=
+            check(scheduler.select_runnable_prefill_lane(3, slots) == std::optional(2U),
+                  "runnable staged-prefill lane skipped a capture owner");
+        slots[1]->capture_pending = false;
+        failures += check(scheduler.select_runnable_prefill_lane(3, slots) == std::optional(1U),
+                          "runnable staged-prefill lane selection changed");
+        slots[1]->capture_pending = true;
+        slots[2].reset();
+        failures += check(scheduler.select_runnable_prefill_lane(3, slots) == std::nullopt,
+                          "runnable staged-prefill lane selected a freed or capture-owned slot");
+    }
+    scheduler.clear_prefill_lane(1);
+    scheduler.clear_prefill_lane(2);
     scheduler.clear_prefill_lane(0);
+    failures += check(!scheduler.has_prefill_lane() && scheduler.select_prefill_lane() == std::nullopt &&
+                          throws_logic([&] { scheduler.clear_prefill_lane(0); }),
+                      "staged-prefill lane clearing changed");
+    failures += check(throws_logic([&] { scheduler.set_prefill_lane(8); }),
+                      "staged-prefill lane bound check changed");
+    scheduler.set_prefill_lane(1);
+    scheduler.set_prefill_lane(2);
+    scheduler.reset();
+    failures +=
+        check(!scheduler.has_prefill_lane(), "scheduler reset did not clear staged-prefill lanes");
 
     std::array<std::shared_ptr<SchedulerRequest>, ninfer::kMaximumConcurrency> slots{};
     slots[0]                      = std::make_shared<SchedulerRequest>();
