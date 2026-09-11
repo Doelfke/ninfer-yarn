@@ -1129,6 +1129,7 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
     for (; t0 < T;) {
         int len = std::min(chunk, T - t0);
         if (split_rel > 0 && t0 < split_rel && t0 + len > split_rel) { len = split_rel - t0; }
+        CUDA_CHECK(cudaStreamSynchronize(s));
         work_.reset();
 
         VisionChunk vision_chunk;
