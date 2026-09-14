@@ -657,11 +657,17 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
     if (options.rope_scaling_factor < 1.0F) {
         throw std::invalid_argument("rope_scaling_factor must be >= 1.0");
     }
+    // YaRN extension is supported with the sliding-window masked draft (DFlash2): its draft
+    // context is a fixed-size window buffer addressed by un-scaled logical positions, so the
+    // only position-scaling-sensitive component is the target model (already scaled), and the
+    // extended frontier never feeds the draft's attention. The full-context masked draft (DFlash)
+    // has a draft-attention layer that reads the entire paged context, whose KV and per-round cost
+    // grow with the extended position range, so it stays gated.
     if (options.rope_scaling_factor > 1.0F &&
-        (options.speculative.backend == SpeculativeBackend::DFlash ||
-         options.speculative.backend == SpeculativeBackend::DFlash2)) {
+        options.speculative.backend == SpeculativeBackend::DFlash) {
         throw std::invalid_argument(
-            "rope_scaling_factor is not supported with masked draft speculative decoding");
+            "rope_scaling_factor is not supported with the full-context DFlash speculative "
+            "backend");
     }
     if (options.max_context == 0 || options.max_context > effective_max) {
         throw std::invalid_argument("max_context exceeds the variant effective context capacity");

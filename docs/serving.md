@@ -807,6 +807,14 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--seed N` | fixed seed when a request omits one | fresh random seed per request |
 | `--greedy` | force exact argmax for all requests | off |
 
+`--rope-scaling-factor` extends the effective context limit with `--spec mtp`, the sliding-window
+`--spec dflash2` backend, and ordinary decode; it is not supported with the full-context
+`--spec dflash` backend. `--max-context` may then exceed the native limit up to
+`min(native * factor, 8388608)`; KV capacity still bounds the physical pool, so long contexts need
+enough device memory (often with a quantized `--kv-dtype`). The DFlash2 draft keeps its context in
+a fixed window addressed by un-scaled logical positions, so the extended frontier does not feed its
+attention; the target model sees the scaled positions.
+
 Context-cost coefficients resolve once at startup from generic defaults, matching compiled values,
 and optional transfer or artifact-prefill entries from `--context-cost-presets FILE`. A malformed
 file aborts startup; the operational context-cost record and JSONL `server_start` identify the

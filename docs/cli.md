@@ -259,8 +259,10 @@ The registered model IDs have a native context limit of 262,144 tokens. `--rope-
 applies YaRN linear position scaling to extend it: positions at or below
 `--rope-scaling-original-context` are unchanged, larger positions map to
 `original_context + (position - original_context) / factor`, and `--max-context` may then exceed the
-native limit up to `min(native * factor, 8388608)`. The factor must be at least `1.0` and is not
-supported with `--spec dflash` or `--spec dflash2`; KV capacity still bounds the physical pool, so
+native limit up to `min(native * factor, 8388608)`. The factor must be at least `1.0` and is
+supported with `--spec mtp`, `--spec dflash2` (the sliding-window draft keeps its context in a
+fixed window addressed by un-scaled logical positions), and ordinary decode; it is not supported
+with the full-context `--spec dflash` backend. KV capacity still bounds the physical pool, so
 long contexts need enough device memory (often with a quantized `--kv-dtype`). The practical
 allocation on one RTX 5090 depends on the selected artifact, media workload, output budget, and
 KV-cache type.
