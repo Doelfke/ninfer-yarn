@@ -440,10 +440,11 @@ public:
             if (tolerant_ && !calls.empty()) { return FallbackReason::TruncatedTail; }
             // Tolerant mode only: recover a single truncated final call. In tolerant mode
             // TruncatedTail here means the call's name and every parsed parameter are complete,
-            // but its closing tag was cut off (or trailing content follows): keep the recovered
-            // call rather than demoting it to raw text. The strict parser retains its
-            // all-or-nothing behavior because it never produces this reason.
-            if (failure == FallbackReason::TruncatedTail && calls.empty()) {
+            // or the output budget cut inside the final parameter keeping its partial value.
+            // A zero-parameter call (cut before any parameter completed) cannot carry
+            // arguments, so it stays text. The strict parser retains its all-or-nothing
+            // behavior because it never produces this reason.
+            if (failure == FallbackReason::TruncatedTail && calls.empty() && !call.parameters.empty()) {
                 calls.push_back(std::move(call));
                 return FallbackReason::TruncatedTail;
             }
@@ -536,6 +537,11 @@ private:
         const std::size_t name_begin = pos;
         const std::size_t name_end   = text_.find('>', name_begin);
         if (name_end == std::string_view::npos || name_end == name_begin) {
+            // The parameter name never completed (the region ends before the ' > ' delimiter),
+            // so there is no delimiter separating the name from a value and no recoverable
+            // argument. This is a structural failure on the call in both strict and tolerant
+            // mode. The value cut (a delimited name whose value is truncated) is the only
+            // parameter-level recovery handled here.
             return FallbackReason::MalformedStructure;
         }
         const std::string_view name = text_.substr(name_begin, name_end - name_begin);
@@ -547,6 +553,15 @@ private:
         const std::size_t value_begin = name_end + 1;
         std::size_t value_end         = 0;
         if (!find_parameter_close(value_begin, value_end)) {
+            if (tolerant_) {
+                // Tolerant mode only: the region ends before the closing tag, so the output
+                // budget cut the parameter value. Keep the value up to the cut and flag the
+                // tail; the strict parser keeps the hard structural failure.
+                call.parameters.push_back(RawParameter{
+                    .name  = name, .value = text_.substr(value_begin, text_.size() - value_begin)});
+                pos = text_.size();
+                return FallbackReason::TruncatedTail;
+            }
             return FallbackReason::MalformedStructure;
         }
         call.parameters.push_back(RawParameter{

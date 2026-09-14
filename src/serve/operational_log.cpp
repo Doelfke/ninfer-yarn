@@ -306,9 +306,12 @@ std::optional<OperationalRecord> render_tool_call_fallback(const RequestLogConte
         reason == ninfer::ToolCallParseFallbackReason::None) {
         return std::nullopt;
     }
-    // Tolerant recovery retained structured calls after discarding a trailing suffix; that is a
-    // successful parse, not a fallback. Note it as informational transparency.
-    if (reason == ninfer::ToolCallParseFallbackReason::TruncatedTail) {
+    // Tolerant recovery retained structured calls after discarding a truncated tail; that is a
+    // successful parse, not a fallback. Note it as informational transparency. When the tail
+    // truncation kept no calls, the region was returned as text and falls through to the
+    // fallback record below.
+    if (reason == ninfer::ToolCallParseFallbackReason::TruncatedTail &&
+        outcome.tool_call_parse.structured_call_count > 0) {
         return OperationalRecord{
             .severity = OperationalSeverity::Info,
             .message  = "req#" + std::to_string(context.id) +

@@ -896,6 +896,49 @@ int test_tolerant_missing_function_close_bracket() {
     return failures;
 }
 
+int test_tolerant_truncated_final_parameter_value() {
+    using Reason = ninfer::ToolCallParseFallbackReason;
+    const auto contract =
+        output_contract_for("task_complete", Json{{"summary", Json{{"type", "string"}}}});
+
+    // The output budget cut the final parameter value: the name and parameter are complete
+    // and the value is complete up to the cut, but the element never closes and no closing
+    // tags follow. Tolerant mode keeps the recovered call; strict keeps the all-or-nothing
+    // fallback. Marker fragments are assembled from split literals so the complete tag
+    // sequences never appear verbatim in this test.
+    const std::string marker     = "<" "tool_call>";
+    const std::string open_fn    = "<" "function=task_complete>";
+    const std::string open_param = "<" "parameter=summary>";
+    const std::string text       = marker + "\n" + open_fn + "\n" + open_param + "\n" +
+                                   "Verified the budgets; cargo test pa";
+
+    const auto tolerant = fi::parse_qwen_tool_call_output(text, 64, *contract, /*tolerant*/ true);
+    int failures = 0;
+    failures += check(tolerant.is_tool_call_response,
+                      "tolerant did not recover a call cut inside its final parameter value");
+    failures += check(tolerant.tool_calls.size() == 1,
+                      "tolerant recovered the wrong call count for a truncated value");
+    if (tolerant.tool_calls.size() == 1) {
+        const auto& call = tolerant.tool_calls.front();
+        failures += check(call.name == "task_complete",
+                          "tolerant lost the call name for a truncated value");
+        const Json arguments = Json::parse(call.arguments_json);
+        failures += check(arguments == Json{{"summary", "Verified the budgets; cargo test pa"}},
+                          "tolerant did not keep the partial parameter value");
+    }
+    failures += check(tolerant.diagnostics.fallback_reason == Reason::TruncatedTail,
+                      "tolerant did not flag the truncated value as a truncated tail");
+
+    const auto strict = fi::parse_qwen_tool_call_output(text, 64, *contract);
+    failures += check(!strict.is_tool_call_response,
+                      "strict recovered a call cut inside its final parameter value");
+    failures += check(strict.tool_calls.empty(), "strict retained a truncated final call");
+    failures += check(strict.content == text, "strict lost raw bytes for a truncated final call");
+    failures += check(strict.diagnostics.fallback_reason == Reason::MalformedStructure,
+                      "strict misclassified a truncated parameter value");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -922,6 +965,7 @@ int main() {
     failures += test_tolerant_recovery();
     failures += test_tolerant_truncated_final_call();
     failures += test_tolerant_missing_function_close_bracket();
+    failures += test_tolerant_truncated_final_parameter_value();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }
