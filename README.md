@@ -52,3 +52,11 @@ services:
               capabilities: [gpu]
 
 ```
+
+With dflash2:
+```
+  "--max-context", "380000",
+  "--kv-capacity", "380000",
+  "--spec", "dflash2",
+  "--draft-tokens", "7",
+```
