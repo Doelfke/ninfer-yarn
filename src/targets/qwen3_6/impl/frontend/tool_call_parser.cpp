@@ -513,7 +513,10 @@ private:
         if (!valid_function_name(call.name, max_name_length_)) {
             return FallbackReason::InvalidToolName;
         }
-        if (contract_.enforce_declared_names &&
+        // Strict mode rejects a name outside the declared tool set. Tolerant mode keeps an
+        // otherwise well-formed call structured and leaves the identity judgment to the
+        // consumer: leaking the raw region to content would turn a valid call into prose.
+        if (!tolerant_ && contract_.enforce_declared_names &&
             find_tool_contract(contract_, call.name) == nullptr) {
             return FallbackReason::UndeclaredTool;
         }

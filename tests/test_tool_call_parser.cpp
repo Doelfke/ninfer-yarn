@@ -939,6 +939,43 @@ int test_tolerant_truncated_final_parameter_value() {
     return failures;
 }
 
+int test_tolerant_undeclared_name_stays_structured() {
+    using Reason = ninfer::ToolCallParseFallbackReason;
+
+    // The request declares "configure" but the model emits a complete, well-formed call to
+    // a name it was not told about. In tolerant mode the call is structurally complete, so
+    // it is kept structured with the emitted name passing through for the consumer to judge;
+    // leaking the raw region to content would turn a valid call into prose. Strict mode keeps
+    // the hard rejection. The call text comes from the tool_call() helper so the envelope
+    // markup does not appear verbatim in this test.
+    const auto contract = contract_for("configure", Json{{"value", Json{{"type", "string"}}}});
+    const std::string text = tool_call("task_complete", {{"summary", "done"}});
+
+    const auto tolerant = fi::parse_qwen_tool_call_output(text, 64, contract, /*tolerant*/ true);
+    int failures = 0;
+    failures += check(tolerant.is_tool_call_response,
+                      "tolerant rejected a well-formed call to an undeclared name");
+    failures += check(tolerant.tool_calls.size() == 1,
+                      "tolerant lost the well-formed undeclared-name call");
+    if (tolerant.tool_calls.size() == 1) {
+        failures += check(tolerant.tool_calls.front().name == "task_complete",
+                          "tolerant dropped the emitted name for an undeclared call");
+    }
+    failures += check(tolerant.diagnostics.fallback_reason == Reason::None,
+                      "tolerant flagged a complete well-formed undeclared call as a fallback");
+    failures += check(tolerant.diagnostics.structured_call_count == 1,
+                      "tolerant did not count the recovered undeclared call");
+
+    // The same complete, well-formed call is still rejected when the name is absent from the
+    // declared set in strict mode; the tolerant flag is what keeps it structured.
+    const auto strict = fi::parse_qwen_tool_call_output(text, 64, contract);
+    failures += check(!strict.is_tool_call_response, "strict accepted a call to an undeclared name");
+    failures += check(strict.tool_calls.empty(), "strict retained an undeclared-name call");
+    failures += check(strict.diagnostics.fallback_reason == Reason::UndeclaredTool,
+                      "strict lost the undeclared-tool fallback for an undeclared name");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -966,6 +1003,7 @@ int main() {
     failures += test_tolerant_truncated_final_call();
     failures += test_tolerant_missing_function_close_bracket();
     failures += test_tolerant_truncated_final_parameter_value();
+    failures += test_tolerant_undeclared_name_stays_structured();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }
