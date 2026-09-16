@@ -747,10 +747,6 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         throw std::invalid_argument(
             "loaded components do not match the requested execution options");
     }
-    if (parameters.draft &&
-        options.max_context > parameters.model.config().draft->max_position_embeddings) {
-        throw std::invalid_argument("max_context exceeds the selected draft position capacity");
-    }
     if (options.rope_scaling_factor < 1.0F) {
         throw std::invalid_argument("rope_scaling_factor must be >= 1.0");
     }
