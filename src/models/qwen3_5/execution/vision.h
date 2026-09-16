@@ -75,13 +75,14 @@ struct VisionChunk {
 
 class VisionPrefillSession {
 public:
-    // When non-null (and holding a value), `--vision-cpu` is active: the ViT runs on the CPU with
-    // these host-resident FP32 weights and no device Vision parameters/workspace are required.
+    // Non-null when `--vision-cpu` is active: the ViT runs on the CPU with these host-resident
+    // FP32 weights (stable for the model's lifetime) and no device Vision parameters/workspace
+    // are required. Null in device mode.
     VisionPrefillSession(DeviceContext& device, const execution::Parameters& parameters,
                          DeviceSpan workspace, const VisionWorkspacePlan& workspace_plan,
                          qwen3_5::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
                          std::size_t& handoff_peak_bytes,
-                         const std::optional<vision_cpu::CpuVisionWeights>* cpu_weights = nullptr);
+                         const vision_cpu::CpuVisionWeights* cpu_weights = nullptr);
 
     [[nodiscard]] VisionChunk prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length);
     void release_encoded_media_payloads() noexcept;
@@ -100,7 +101,7 @@ private:
     qwen3_5::PreparedPromptData& prompt_;
     const VisionPrefillPlan& plan_;
     std::size_t& handoff_peak_bytes_;
-    const std::optional<vision_cpu::CpuVisionWeights>* cpu_weights_;
+    const vision_cpu::CpuVisionWeights* cpu_weights_ = nullptr;
     VisionContext context_;
     std::size_t next_use_ = 0;
     std::optional<std::uint32_t> active_item_;

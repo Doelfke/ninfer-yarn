@@ -345,12 +345,17 @@ ProgramImpl::reserve_materialization(AdmissionCandidate&& plan, PreparedPromptDa
                 throw std::logic_error("Vision prefill has no startup workspace plan");
             }
             // `--vision-cpu`: the session takes the model's host-resident FP32 Vision weights
-            // (stable for the model's lifetime); when present it runs the encoder on the CPU.
+            // (stable for the model's lifetime). A non-null pointer selects the CPU encoder;
+            // null (the device default) runs the device Vision parameters.
+            const vision_cpu::CpuVisionWeights* cpu_vision_ptr =
+                parameters.model.cpu_vision().has_value()
+                    ? &parameters.model.cpu_vision().value()
+                    : nullptr;
             request.prefill->vision = std::make_unique<execution::VisionPrefillSession>(
                 device, parameters,
                 DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
                 *workspace_plan.vision, request.prefill->prompt, *request.prefill->vision_plan,
-                vision_handoff_peak_bytes, &parameters.model.cpu_vision());
+                vision_handoff_peak_bytes, cpu_vision_ptr);
         }
         request.prefill->elapsed_seconds =
             std::chrono::duration<double>(Clock::now() - host_started).count();
