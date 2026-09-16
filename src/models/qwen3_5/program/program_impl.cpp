@@ -46,6 +46,8 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
       speculative_backend(plan.speculative_backend), kv_storage(plan.kv_storage),
       proposal_head(plan.proposal_head), vision_enabled(plan.features.vision),
       use_cuda_graph(plan.use_cuda_graph), causal_scoring(plan.causal_scoring),
+      rope_scaling_factor(plan.rope_scaling_factor),
+      rope_scaling_original_context(plan.rope_scaling_original_context),
       kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
       persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
@@ -409,7 +411,8 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
             const std::uint32_t nominal = std::min(prefill_chunk, predictor_count - cursor);
             execution::PrefillContext schedule_state{
                 {device, parameters, work, state_images->linear(), nullptr, io, prefill_hidden,
-                 prefill_chunk, proposal_head},
+                 prefill_chunk, proposal_head, rope_scaling_factor,
+                 rope_scaling_original_context},
                 decoder->text_kv.execution_view(text_kv_addresses->execution_row(*address)),
                 {},
                 decoder->text_kv,

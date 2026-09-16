@@ -21,23 +21,6 @@
 namespace ninfer::models::qwen3_5::execution {
 namespace {
 
-// Host-side mirror of ops::scale_positions_yarn (src/ops/kernel/position.cuh).
-// Applied to spec-decode target RoPE positions so the target model sees YaRN-scaled
-// positions while the draft continues on unscaled logical positions (which it must,
-// per the draft's own position-encoding invariants).
-[[nodiscard]] std::int32_t yarn_scale_position(std::int32_t position, std::uint32_t original_context,
-                                               float factor) noexcept {
-    if (factor == 1.0F ||
-        position <= static_cast<std::int32_t>(original_context)) {
-        return position;
-    }
-    const float scaled = static_cast<float>(original_context) +
-                         (static_cast<float>(position - static_cast<std::int32_t>(original_context))) /
-                             factor +
-                         0.5F;
-    return static_cast<std::int32_t>(scaled);
-}
-
 auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
                          ops::CausalAttentionExecutionEnvelope envelope) {
     return [&state, batch_size, envelope] {
@@ -100,6 +83,23 @@ void ordinary_decode_batch(OrdinaryBatchContext& state, std::int32_t batch_size,
 namespace ninfer::models::qwen3_5::detail {
 
 namespace {
+
+// Host-side mirror of ops::scale_positions_yarn (src/ops/kernel/position.cuh). Applied to the
+// spec-decode target and ordinary-decode host RoPE positions so the target model sees YaRN-scaled
+// positions while the draft continues on unscaled logical positions (which it must, per the draft's
+// own position-encoding invariants).
+[[nodiscard]] std::int32_t yarn_scale_position(std::int32_t position, std::uint32_t original_context,
+                                               float factor) noexcept {
+    if (factor == 1.0F ||
+        position <= static_cast<std::int32_t>(original_context)) {
+        return position;
+    }
+    const float scaled = static_cast<float>(original_context) +
+                         (static_cast<float>(position - static_cast<std::int32_t>(original_context))) /
+                             factor +
+                         0.5F;
+    return static_cast<std::int32_t>(scaled);
+}
 
 DecodeGraphProfile& select_graph_profile(DecodeGraphFamily& family, std::uint32_t batch_size,
                                          std::uint32_t frontier, const char* label);
@@ -262,7 +262,9 @@ void ProgramImpl::enqueue_dflash_context_append(std::span<const std::uint32_t> l
 
     execution::DFlashAppendContext state{{device, parameters, work, state_images->linear(),
                                           replay_records ? &*replay_records : nullptr, io,
-                                          prefill_hidden, prefill_chunk, proposal_head},
+                                          prefill_hidden, prefill_chunk, proposal_head,
+                                          rope_scaling_factor,
+                                          rope_scaling_original_context},
                                          *dflash};
     mark_workspace_usage(workspace_plan.dflash_context);
     execution::dflash_append_context(state, features, positions, device_counts,
@@ -353,7 +355,7 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
         execution::OrdinaryBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, rope_scaling_factor, rope_scaling_original_context},
             decoder->text_kv,
             *io.ordinary,
             *ordinary_host_ingress,
@@ -514,7 +516,9 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
 
         execution::MtpBatchContext schedule_state{{device, parameters, work, state_images->linear(),
                                                    replay_records ? &*replay_records : nullptr, io,
-                                                   prefill_hidden, prefill_chunk, proposal_head},
+                                                   prefill_hidden, prefill_chunk, proposal_head,
+                                                   rope_scaling_factor,
+                                                   rope_scaling_original_context},
                                                   decoder->text_kv,
                                                   *decoder->mtp_cache(),
                                                   *io.mtp_decode,
@@ -711,7 +715,7 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
         execution::DFlashBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, rope_scaling_factor, rope_scaling_original_context},
             decoder->text_kv,
             *dflash,
             *io.dflash_decode,

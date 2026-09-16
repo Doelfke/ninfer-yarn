@@ -23,27 +23,6 @@
 namespace ninfer::models::qwen3_5::execution {
 namespace {
 
-// Host-side mirror of ops::scale_positions_yarn (src/ops/kernel/position.cuh).
-// Pre-merge `yarn_scale_position` (this fork's `576e72ea` "Support concurrent
-// staged-prefill lanes and apply YARN scaling to DFlash target RoPE positions").
-// Applied to the host-written RoPE position values that enter the target model —
-// the staged-prefill completion `io.rope_pos`, both MTP bridge `rope_position`
-// values, and the ordinary decode `rope_positions` ingress in decode.cpp. The
-// spec-decode `target_rope_positions` ingress (also this helper, decode.cpp) and
-// the MTP draft AR positions (device-side, mtp.cpp) are the other two sites.
-[[nodiscard]] std::int32_t yarn_scale_position(std::int32_t position,
-                                               std::uint32_t original_context, float factor) noexcept
-{
-    if (factor == 1.0F || position <= static_cast<std::int32_t>(original_context)) {
-        return position;
-    }
-    const float scaled = static_cast<float>(original_context) +
-                         (static_cast<float>(position - static_cast<std::int32_t>(original_context))) /
-                             factor +
-                         0.5F;
-    return static_cast<std::int32_t>(scaled);
-}
-
 DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
     if (!state.execution.io.dflash_decode || state.dflash_host_ingress == nullptr) {
         throw std::logic_error("DFlash prefill controls are unavailable");
@@ -199,6 +178,21 @@ std::array<std::int32_t, 3> prompt_rope_position(const PreparedPromptData& promp
     }
     return {prompt.positions[token], prompt.positions[tokens + token],
             prompt.positions[2 * tokens + token]};
+}
+
+// Host-side mirror of ops::scale_positions_yarn (src/ops/kernel/position.cuh). Applied to the
+// host-written RoPE position values that enter the target model (the staged-prefill completion
+// and bridge values here; the spec-decode target ingress lives in decode.cpp).
+[[nodiscard]] std::int32_t yarn_scale_position(std::int32_t position, std::uint32_t original_context,
+                                               float factor) noexcept {
+    if (factor == 1.0F || position <= static_cast<std::int32_t>(original_context)) {
+        return position;
+    }
+    const float scaled = static_cast<float>(original_context) +
+                         (static_cast<float>(position - static_cast<std::int32_t>(original_context))) /
+                             factor +
+                         0.5F;
+    return static_cast<std::int32_t>(scaled);
 }
 
 } // namespace
@@ -1014,7 +1008,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         execution::PrefillContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, rope_scaling_factor, rope_scaling_original_context},
             text_kv_view(sequence),
             mtp_kv_view(sequence),
             decoder->text_kv,
@@ -1039,7 +1033,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             const execution::MtpBridgeInput bridge{
                 .previous_hidden = &previous_hidden,
                 .position        = checked_i32(staged.base - 1, "MTP bridge position"),
-                .rope_position   = [rp = prompt_rope_position(staged.prompt, staged.base - 1)] {
+                .rope_position   = [&] {
+                    auto rp = prompt_rope_position(staged.prompt, staged.base - 1);
                     for (std::int32_t& axis : rp) {
                         axis = yarn_scale_position(axis, rope_scaling_original_context,
                                                    rope_scaling_factor);
@@ -1194,8 +1189,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                     throw std::logic_error("zero-suffix MTP reuse has no exact-hit bridge");
                 }
                 mark_workspace_usage(workspace_plan.mtp_prefill);
-                const auto bridge_rope = [rp = prompt_rope_position(staged.prompt,
-                                                                     staged.prompt_tokens - 1)] {
+                const auto bridge_rope = [&] {
+                    auto rp = prompt_rope_position(staged.prompt, staged.prompt_tokens - 1);
                     for (std::int32_t& axis : rp) {
                         axis = yarn_scale_position(axis, rope_scaling_original_context,
                                                    rope_scaling_factor);
