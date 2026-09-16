@@ -720,8 +720,18 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     if (plan.features.vision) {
         const std::uint32_t merged = static_cast<std::uint32_t>(
             std::min<std::uint64_t>(plan.capacity, kMaximumVisionItemTokens));
-        out.vision = execution::VisionContext::plan_workspace(
-            *parameters.model.config().vision, *parameters.vision, merged, out.general_capacity);
+        if (plan.features.vision_cpu_offload) {
+            // `--vision-cpu`: only the final embedding handoff is device-resident (encoder runs on
+            // the host with the model's dequantized weights); no device encode scratch is planned.
+            out.vision = execution::plan_vision_workspace_offload(
+                *parameters.model.config().vision,
+                static_cast<std::int32_t>(parameters.model.config().text.hidden_size), merged,
+                out.general_capacity);
+        } else {
+            out.vision = execution::VisionContext::plan_workspace(
+                *parameters.model.config().vision, *parameters.vision, merged,
+                out.general_capacity);
+        }
         out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
     }
     return out;

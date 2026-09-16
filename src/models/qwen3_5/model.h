@@ -4,6 +4,7 @@
 #include "artifact/materializer.h"
 #include "models/qwen3_5/config.h"
 #include "models/qwen3_5/frontend/resources.h"
+#include "models/qwen3_5/execution/vision_cpu/vision_cpu_weights.h"
 #include "models/qwen3_5/weights.h"
 #include "ninfer/ops/weight_input.h"
 
@@ -51,11 +52,19 @@ public:
         return backing_.stats();
     }
 
+    // Host-resident dequantized FP32 Vision weights for the `--vision-cpu` offload. Set (and the
+    // device `vision` parameters absent) only when `LoadOptions::vision_cpu_offload` is requested;
+    // the encoder then runs on the host and no Vision weight is loaded into the device arena.
+    [[nodiscard]] const std::optional<vision_cpu::CpuVisionWeights>& cpu_vision() const noexcept {
+        return cpu_vision_;
+    }
+
 private:
     friend std::unique_ptr<Model> materialize_model(LoadPlan&&, DeviceContext&,
                                                     const StartupObserver*);
     Model(Config config, LoadOptions options, ModelWeights weights, std::vector<BoundWeight> bound,
-          FrontendResources resources, InstanceInfo info, artifact::MaterializedArtifact backing);
+          FrontendResources resources, InstanceInfo info, artifact::MaterializedArtifact backing,
+          std::optional<vision_cpu::CpuVisionWeights> cpu_vision = std::nullopt);
 
     // Destroy all borrowers before backing. The caller keeps DeviceContext alive through cleanup.
     artifact::MaterializedArtifact backing_;
@@ -65,6 +74,7 @@ private:
     std::vector<BoundWeight> bound_;
     FrontendResources resources_;
     InstanceInfo info_;
+    std::optional<vision_cpu::CpuVisionWeights> cpu_vision_;
 };
 
 } // namespace ninfer::models::qwen3_5

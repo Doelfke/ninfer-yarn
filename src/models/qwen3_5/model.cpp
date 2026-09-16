@@ -7,10 +7,11 @@ namespace ninfer::models::qwen3_5 {
 
 Model::Model(Config config, LoadOptions options, ModelWeights weights,
              std::vector<BoundWeight> bound, FrontendResources resources, InstanceInfo info,
-             artifact::MaterializedArtifact backing)
+             artifact::MaterializedArtifact backing,
+             std::optional<vision_cpu::CpuVisionWeights> cpu_vision)
     : backing_(std::move(backing)), config_(std::move(config)), options_(options),
       weights_(std::move(weights)), bound_(std::move(bound)), resources_(std::move(resources)),
-      info_(std::move(info)) {}
+      info_(std::move(info)), cpu_vision_(std::move(cpu_vision)) {}
 
 Model::~Model() = default;
 

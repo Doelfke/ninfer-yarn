@@ -29,6 +29,8 @@ public:
     [[nodiscard]] const artifact::MaterializationPlan& materialization() const;
     [[nodiscard]] const artifact::ParameterReference& parameter(WeightId id) const;
     [[nodiscard]] std::span<const WeightUse> uses(WeightId id) const;
+    // Host-resident dequantized FP32 Vision weights (`--vision-cpu` offload); absent otherwise.
+    [[nodiscard]] const std::optional<vision_cpu::CpuVisionWeights>& cpu_vision() const;
 
 private:
     struct Impl;

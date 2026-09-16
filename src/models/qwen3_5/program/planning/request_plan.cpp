@@ -289,11 +289,19 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
             if (begin < previous_end) {
                 throw std::invalid_argument("vision item consumer spans overlap");
             }
-            if (item.merged_count > workspace_plan.vision->max_merged_tokens ||
-                execution::VisionContext::workspace_bytes(
-                    *parameters.model.config().vision, *parameters.vision,
-                    prompt.vision_items[index].patch_count, item.merged_count,
-                    *workspace_plan.vision) > workspace_plan.vision->encode_peak_bytes) {
+            // `--vision-cpu` runs the encoder on the host, so there is no device encode scratch to
+            // bound against; only the handoff extent (`max_merged_tokens`) is checked. The device
+            // path additionally requires the device encode layout to fit `encode_peak_bytes`.
+            const bool vision_offload = parameters.model.options().vision_cpu_offload;
+            const bool item_too_large =
+                item.merged_count > workspace_plan.vision->max_merged_tokens ||
+                (!vision_offload &&
+                 execution::VisionContext::workspace_bytes(
+                     *parameters.model.config().vision, *parameters.vision,
+                     prompt.vision_items[index].patch_count, item.merged_count,
+                     *workspace_plan.vision) >
+                     workspace_plan.vision->encode_peak_bytes);
+            if (item_too_large) {
                 throw std::invalid_argument("vision item exceeds the Program workspace envelope");
             }
             previous_end = item.token_end;

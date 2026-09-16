@@ -778,7 +778,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
-| `--vision-cpu` | parsed for compatibility; rejected at startup — the artifact loader cannot place Vision weights in host DRAM. Use `--vision` instead | off |
+| `--vision-cpu` | enable media input with the Vision encoder on the CPU (weights stay in host DRAM, saving device memory). Implies `--vision` | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--device-state-slots N` | extra Device checkpoint StateImages beyond the active-lane guarantee | `max-concurrency` |

@@ -9,6 +9,7 @@ namespace ninfer::models {
 struct LoadOptions {
     EnginePurpose purpose          = EnginePurpose::Generation;
     bool vision                    = false;
+    bool vision_cpu_offload        = false; // Run the Vision encoder on CPU (weights stay host-resident).
     SpeculativeBackend speculative = SpeculativeBackend::None;
     ProposalHead proposal_head     = ProposalHead::Full;
 
@@ -53,10 +54,11 @@ struct LoadOptions {
 }
 
 [[nodiscard]] inline LoadOptions load_options(const EngineOptions& options) noexcept {
-    return {.purpose       = options.purpose,
-            .vision        = options.enable_vision,
-            .speculative   = options.speculative.backend,
-            .proposal_head = options.speculative.proposal_head};
+    return {.purpose            = options.purpose,
+            .vision             = options.enable_vision,
+            .vision_cpu_offload = options.vision_cpu_offload,
+            .speculative        = options.speculative.backend,
+            .proposal_head      = options.speculative.proposal_head};
 }
 
 } // namespace ninfer::models

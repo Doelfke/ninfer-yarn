@@ -271,7 +271,9 @@ Parameters::Parameters(const Model& source) : model(source) {
     if (w.mtp) {
         mtp = with_context("mtp", [&] { return prepare.mtp(*w.mtp); });
     }
-    if (w.vision) {
+    // In `--vision-cpu` offload mode the device vision weights are absent (the host carries the
+    // dequantized FP32 weights instead), so no device `VisionParameters` are prepared.
+    if (w.vision && !model.options().vision_cpu_offload) {
         vision = with_context("vision", [&] { return prepare.vision(*w.vision); });
     }
     if (w.draft) {

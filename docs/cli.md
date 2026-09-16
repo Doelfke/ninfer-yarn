@@ -92,9 +92,12 @@ GPU residency is frozen when the Engine starts:
 - Vision is disabled by default, omitting its weights and Vision-specific unified-workspace extent;
 - `--vision` loads the weights, expands the one Program workspace for Vision encode/handoff, and
   enables image/video input.
-- `--vision-cpu` is accepted for compatibility but rejected at Engine startup: the consolidated
-  artifact loader has no route for host-resident (CPU-decoded) Vision weights, so the engine
-  refuses to start with it. Drop the flag and use `--vision` (device Vision encoder).
+- `--vision-cpu` enables media input plus the Vision offload: the Vision encoder weights are
+  dequantized into host DRAM at load, the ViT runs on the CPU during prefill, and only the final
+  embedding handoff is loaded onto the device. The device Program workspace is sized for the
+  handoff region only, and the device encoder scratch is not reserved. This saves the device
+  memory for the ~1.7 GB Qwen3.x Vision encoder but makes prefill slower when the prompt carries
+  media
 - the one-request CLI uses root-only context mode, so it does not reserve an extra Device
   checkpoint StateImage or capture a continuation that no later request could consume.
 
@@ -221,7 +224,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--rope-scaling-factor F` | YaRN position-scaling factor `1.0..32.0`; `1.0` disables scaling, larger values extend the effective context limit by the factor | `1.0` |
 | `--rope-scaling-original-context N` | YaRN ramp threshold; positions at or below it are unscaled | `262144` |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
-| `--vision-cpu` | parsed for compatibility; rejected at startup — the artifact loader cannot place Vision weights in host DRAM. Use `--vision` instead | off |
+| `--vision-cpu` | enable image/video input with the Vision encoder on the CPU (weights stay in host DRAM, saving device memory). Implies `--vision` | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--chat-template FILE` | use a local Jinja template | artifact template |
 | `--no-thinking` | disable thinking | template default |

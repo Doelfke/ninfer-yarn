@@ -54,12 +54,9 @@ void validate_options(const EngineOptions& options) {
         throw std::invalid_argument(
             "Engine media_live_bytes must be nonzero when Vision is enabled");
     }
-    if (options.vision_cpu_offload) {
-        // The consolidated v3 artifact loader has no host-resident (CPU-decoded) Vision weight
-        // route; refusing here keeps the flag from silently degrading to device decode.
+    if (options.vision_cpu_offload && !options.enable_vision) {
         throw std::invalid_argument(
-            "--vision-cpu is not supported by the v3 artifact loader: host-resident Vision "
-            "weights are unavailable; drop the flag to use the device Vision encoder");
+            "vision_cpu_offload requires enable_vision (Vision must be enabled)");
     }
     if (options.media_preprocess_threads > 64) {
         throw std::invalid_argument("Engine media_preprocess_threads must be in [0,64]");

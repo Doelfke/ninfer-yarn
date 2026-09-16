@@ -4,6 +4,7 @@
 #include "core/device.h"
 #include "core/layout.h"
 #include "core/nvtx.h"
+#include "models/qwen3_5/execution/vision_cpu/vision_cpu.h"
 #include "models/qwen3_5/program/vision_control.h"
 #include "ninfer/ops/add_bias.h"
 #include "ninfer/ops/gelu.h"
@@ -23,6 +24,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace ninfer::models::qwen3_5::execution {
 namespace {
@@ -222,9 +224,33 @@ void copy_host(const void* src, Tensor& dst, cudaStream_t stream) {
 
 } // namespace
 
-VisionContext::VisionContext(DeviceContext& ctx, const Parameters& parameters)
+VisionWorkspacePlan plan_vision_workspace_offload(const VisionConfig& config,
+                                                  std::int32_t output_hidden,
+                                                  std::uint32_t max_merged_tokens,
+                                                  std::size_t general_capacity_bytes) {
+    if (max_merged_tokens == 0 || general_capacity_bytes == 0 || output_hidden <= 0) {
+        throw std::invalid_argument("Vision offload workspace extents must be positive");
+    }
+    VisionWorkspacePlan out;
+    out.output_hidden          = output_hidden;
+    out.max_merged_tokens      = max_merged_tokens;
+    out.general_capacity_bytes = general_capacity_bytes;
+    // `--vision-cpu`: only the final embedding handoff is device-resident; the ViT scratch lives
+    // on the CPU, so the encode scratch is zero.
+    out.encode_peak_bytes      = 0;
+    out.handoff_offset_bytes =
+        align_up(general_capacity_bytes, kWorkspaceAlignment, "offload handoff offset");
+    out.handoff_capacity_bytes = output_handoff_bytes(output_hidden, max_merged_tokens);
+    out.capacity_bytes =
+        checked_add(out.handoff_offset_bytes, out.handoff_capacity_bytes, "offload workspace");
+    (void)config;
+    return out;
+}
+
+VisionContext::VisionContext(DeviceContext& ctx, const Parameters& parameters,
+                             bool use_device_parameters)
     : ctx_(ctx), config_(parameters.model.config().vision.value()),
-      parameters_(parameters.vision.value()) {}
+      parameters_(use_device_parameters ? &parameters.vision.value() : nullptr) {}
 
 std::size_t VisionContext::workspace_bytes(const VisionConfig& config,
                                            const VisionParameters& parameters, std::size_t patches,
@@ -423,9 +449,11 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
 VisionPrefillSession::VisionPrefillSession(
     DeviceContext& device, const execution::Parameters& parameters, DeviceSpan workspace,
     const VisionWorkspacePlan& workspace_plan, qwen3_5::PreparedPromptData& prompt,
-    const VisionPrefillPlan& plan, std::size_t& handoff_peak_bytes)
+    const VisionPrefillPlan& plan, std::size_t& handoff_peak_bytes,
+    const std::optional<vision_cpu::CpuVisionWeights>* cpu_weights)
     : device_(device), workspace_(workspace), workspace_plan_(workspace_plan), prompt_(prompt),
-      plan_(plan), handoff_peak_bytes_(handoff_peak_bytes), context_(device, parameters) {
+      plan_(plan), handoff_peak_bytes_(handoff_peak_bytes), cpu_weights_(cpu_weights),
+      context_(device, parameters, cpu_weights == nullptr) {
     if (plan_.control == nullptr || plan_.control->items.empty() || plan_.uses.empty()) {
         throw std::invalid_argument("Vision prefill plan has no suffix item spans");
     }
@@ -509,6 +537,35 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
     }
     const qwen3_5::VisionItemControl& control = plan_.control->items[active->control_index];
     Tensor output = VisionContext::bind_output(workspace_, workspace_plan_, control.merged_count);
+
+    if (cpu_weights_ != nullptr) {
+        // `--vision-cpu`: run the ViT on the CPU with the host-resident FP32 weights and hand the
+        // final BF16 embedding to the device handoff region. The device scratch/encode is unused.
+        if (!active_item_ || *active_item_ != active->prepared_item_index) {
+            const auto& weights = *cpu_weights_;
+            const int32_t patches = static_cast<int32_t>(control.patch_count);
+            std::vector<float> visible;
+            vision_cpu::encode(weights, prompt_.media_payloads[active->prepared_item_index]
+                                            ->span()
+                                           .data(),
+                               control.position_ids.data(),
+                               control.position_table_indices.data(),
+                               control.position_table_weights.data(), patches,
+                               control.segment_length,
+                               static_cast<int>(std::thread::hardware_concurrency()),
+                               visible);
+            // Synchronous transfer so the host `visible` buffer is fully consumed before it can be
+            // freed; the device scatter in the text prefill then reads the completed handoff.
+            CUDA_CHECK(cudaMemcpy(output.data, visible.data(),
+                                  static_cast<std::size_t>(visible.size()) * 2,
+                                  cudaMemcpyHostToDevice));
+            active_item_          = active->prepared_item_index;
+            active_handoff_bytes_ = output.bytes();
+            handoff_peak_bytes_   = std::max(handoff_peak_bytes_, active_handoff_bytes_);
+            encoded_payloads_pending_release_.push_back(active->prepared_item_index);
+        }
+        return VisionChunk{static_cast<int32_t>(end - begin), &control, output};
+    }
 
     if (!active_item_ || *active_item_ != active->prepared_item_index) {
         const auto& payload = prompt_.media_payloads[active->prepared_item_index];
