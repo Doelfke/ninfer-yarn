@@ -218,7 +218,12 @@ int run_nvfp4() {
     failures += run_nvfp4_case(parent, 1, ops::LinearPolicy::AllowA4);
     failures += run_nvfp4_case(parent, 2, ops::LinearPolicy::AllowA4);
     failures += run_nvfp4_case(parent, 17, ops::LinearPolicy::AllowA4);
+    // 1023, 1024 and 1025 straddle this route's floor. 1024 was the narrowest width it
+    // took before; 1025 is the first ragged one it takes now, and its last M tile holds a
+    // single real token, which is the emptiest grid this route ever runs.
+    failures += run_nvfp4_case(parent, 1023, ops::LinearPolicy::AllowA4);
     failures += run_nvfp4_case(parent, 1024, ops::LinearPolicy::AllowA4);
+    failures += run_nvfp4_case(parent, 1025, ops::LinearPolicy::AllowA4);
     return failures;
 }
 
