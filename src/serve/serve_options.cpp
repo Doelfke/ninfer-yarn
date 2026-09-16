@@ -82,7 +82,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--rope-scaling-factor F] [--rope-scaling-original-context N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
-           "[--lm-head-draft] [--no-thinking] [--preserve-thinking] "
+           "[--chat-template FILE] [--lm-head-draft] [--no-thinking] [--preserve-thinking] "
            "[--tolerant-tool-calls] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -96,7 +96,7 @@ std::string serve_usage_text(const char* argv0) {
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
            "       --media-preprocess-threads defaults to 0 (auto, at most 16 workers)\n"
            "       --request-log-jsonl appends full-precision server/request records\n"
-           "       --model-id overrides the artifact identity.model_id reported by the server\n"
+           "       --model-id overrides the artifact metadata.name reported by the server\n"
            "       Responses state is process-local and bounded to 1024 records / 256 MiB by "
            "default\n"
            "       --log-stats-interval-ms defaults to 5000; 0 disables periodic throughput logs\n"
@@ -295,6 +295,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.allow_prefix_reuse = false;
         } else if (arg == "--lm-head-draft") {
             options.speculative.proposal_head = ProposalHead::Optimized;
+        } else if (arg == "--chat-template") {
+            options.chat_template_path = require_value("--chat-template");
         } else if (arg == "--no-thinking") {
             options.enable_thinking = false;
         } else if (arg == "--preserve-thinking") {
@@ -377,12 +379,12 @@ ServeOptions parse_serve_options(int argc, char** argv) {
 }
 
 std::string resolve_public_model_id(const ServeOptions& options,
-                                    std::string_view artifact_model_id) {
+                                    std::string_view artifact_model_name) {
     if (options.model_id_override.has_value()) { return *options.model_id_override; }
-    if (artifact_model_id.empty()) {
-        throw std::logic_error("loaded artifact model_id must not be empty");
+    if (artifact_model_name.empty()) {
+        throw std::logic_error("loaded artifact model name must not be empty");
     }
-    return std::string(artifact_model_id);
+    return std::string(artifact_model_name);
 }
 
 } // namespace ninfer::serve

@@ -1,3 +1,4 @@
+#include "core/weight.h"
 #include "ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_plan.h"
 
 #include "core/device.h"
@@ -9,7 +10,7 @@
 namespace ninfer::ops::detail {
 namespace {
 
-using Geometry = Nvfp4GdnInputGeometry;
+using Geometry = Nvfp4N16384K5120;
 
 using M32N64                      = Nvfp4W4a4MmaSchedule<32, 64, 256, 2, 4, 2, 2>;
 using M32N128                     = Nvfp4W4a4MmaSchedule<32, 128, 256, 2, 4, 2, 1>;

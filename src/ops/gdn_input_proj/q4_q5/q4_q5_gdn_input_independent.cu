@@ -1,3 +1,4 @@
+#include "core/weight.h"
 #include "ops/gdn_input_proj/q4_q5/q4_q5_gdn_input_kernels.h"
 
 #include "core/device.h"
@@ -26,7 +27,7 @@ using Q4GdnSimtR8C4Schedule = Q4RowSplitSimtGemmSchedule<8, 4, 16, 2, Cache::ca,
 using Q4GdnSimtR8C8Schedule = Q4RowSplitSimtGemmSchedule<8, 8, 16, 2, Cache::ca, 1>;
 
 void launch_q4_gemv(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
-    using Schedule = Q4GemvR1W8DirectSchedule;
+    using Schedule = Q4GemvR1Q8DirectSchedule;
     const dim3 grid(static_cast<unsigned>(div_up(kQkRows, Schedule::kRowsPerCta)), 1u, 1u);
     constexpr dim3 block(static_cast<unsigned>(Schedule::kThreads), 1u, 1u);
     q4_rowsplit_gemv_kernel<Schedule><<<grid, block, 0, stream>>>(

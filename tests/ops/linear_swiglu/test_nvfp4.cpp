@@ -1,3 +1,4 @@
+#include "core/weight.h"
 #include "ops/linear_swiglu/linear_swiglu_test_common.h"
 
 #include <array>

@@ -30,30 +30,29 @@ inline void nvfp4_check_driver(CUresult status, const char* operation) {
                              (name != nullptr ? name : "CUDA error"));
 }
 
-inline CUtensorMap nvfp4_make_tma_2d(void* address, CUtensorMapDataType data_type,
-                                     std::uint64_t columns, std::uint64_t rows,
-                                     std::uint64_t row_stride_bytes, std::uint32_t box_columns,
-                                     std::uint32_t box_rows, CUtensorMapSwizzle swizzle,
-                                     const char* operation) {
+inline CUtensorMap
+nvfp4_make_tma_2d(void* address, CUtensorMapDataType data_type, std::uint64_t columns,
+                  std::uint64_t rows, std::uint64_t row_stride_bytes, std::uint32_t box_columns,
+                  std::uint32_t box_rows, CUtensorMapSwizzle swizzle, const char* operation,
+                  CUtensorMapL2promotion l2_promotion = CU_TENSOR_MAP_L2_PROMOTION_NONE) {
     CUtensorMap map{};
     const std::uint64_t global_dim[]     = {columns, rows};
     const std::uint64_t global_stride[]  = {row_stride_bytes};
     const std::uint32_t box_dim[]        = {box_columns, box_rows};
     const std::uint32_t element_stride[] = {1, 1};
-    nvfp4_check_driver(
-        cuTensorMapEncodeTiled(&map, data_type, 2, address, global_dim, global_stride, box_dim,
-                               element_stride, CU_TENSOR_MAP_INTERLEAVE_NONE, swizzle,
-                               CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE),
-        operation);
+    nvfp4_check_driver(cuTensorMapEncodeTiled(&map, data_type, 2, address, global_dim,
+                                              global_stride, box_dim, element_stride,
+                                              CU_TENSOR_MAP_INTERLEAVE_NONE, swizzle, l2_promotion,
+                                              CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE),
+                       operation);
     return map;
 }
 
 template <class Geometry, int BlockM>
-Nvfp4W4a4TmaDescriptors make_nvfp4_w4a4_tma_descriptors(const std::uint8_t* activation_codes,
-                                                        const std::uint8_t* activation_scales,
-                                                        const std::uint8_t* weight_codes,
-                                                        const std::uint8_t* weight_scales,
-                                                        std::int32_t tokens) {
+Nvfp4W4a4TmaDescriptors make_nvfp4_w4a4_tma_descriptors(
+    const std::uint8_t* activation_codes, const std::uint8_t* activation_scales,
+    const std::uint8_t* weight_codes, const std::uint8_t* weight_scales, std::int32_t tokens,
+    CUtensorMapL2promotion weight_code_promotion = CU_TENSOR_MAP_L2_PROMOTION_NONE) {
     static_assert(BlockM == 128 || BlockM == 256);
     constexpr std::uint32_t kCodeColumns = 64;
     // TMA's innermost box is at least one 16-byte transaction. A K128 tile consumes the
@@ -71,7 +70,7 @@ Nvfp4W4a4TmaDescriptors make_nvfp4_w4a4_tma_descriptors(const std::uint8_t* acti
     descriptors.b_codes = nvfp4_make_tma_2d(
         const_cast<std::uint8_t*>(weight_codes), CU_TENSOR_MAP_DATA_TYPE_UINT8,
         Geometry::kCodeBytesPerRow, Geometry::kOutputRows, Geometry::kCodeBytesPerRow, kCodeColumns,
-        kBlockN, CU_TENSOR_MAP_SWIZZLE_64B, "encode weight codes TMA");
+        kBlockN, CU_TENSOR_MAP_SWIZZLE_64B, "encode weight codes TMA", weight_code_promotion);
     descriptors.a_scales = nvfp4_make_tma_2d(
         const_cast<std::uint8_t*>(activation_scales), CU_TENSOR_MAP_DATA_TYPE_UINT8,
         Geometry::kGroupsPerRow, tokens, Geometry::kGroupsPerRow, kScaleColumns, BlockM,
@@ -82,11 +81,14 @@ Nvfp4W4a4TmaDescriptors make_nvfp4_w4a4_tma_descriptors(const std::uint8_t* acti
     return descriptors;
 }
 
-template <int BlockM, int Stages, int MinBlocksPerSm>
+template <int BlockM, int Stages, int MinBlocksPerSm,
+          CUtensorMapL2promotion WeightCodePromotion = CU_TENSOR_MAP_L2_PROMOTION_NONE>
 struct Nvfp4W4a4TmaSchedule {
     static_assert(BlockM == 128 || BlockM == 256);
     static_assert(Stages >= 2 && Stages <= 4);
     static_assert(MinBlocksPerSm > 0);
+
+    static constexpr auto kWeightCodePromotion = WeightCodePromotion;
 
     static constexpr int kBlockM           = BlockM;
     static constexpr int kBlockN           = 128;

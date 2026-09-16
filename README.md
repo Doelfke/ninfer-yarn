@@ -4,7 +4,10 @@ This is a fork of [Ninfer](https://github.com/gzenz/ninfer), an inference engine
 
 - `--rope-scaling-factor` and `--rope-scaling-original-context` 
 - `--tolerant-tool-calls` for Qwen, to ensure tool calls are OpenAI compatible.  
-- `--vision-cpu` to offload vision.  
+- `--vision` to enable vision (device-resident Vision weights). A CPU-offload variant
+  (`--vision-cpu`) is still parsed but rejected at startup by the merged v3 artifact loader;
+  it requires CPU-side dequant of the Vision encoder, which must be re-anchored on the new
+  loader.
 
 When using an NVFP4 KV cache, this allows you to reach a 420,000 token context, while having vision enabled, MTP -- supporting 2 sessions at once.  This assumes `maxOutputTokens` is set to 130,000 in your code editor.
 

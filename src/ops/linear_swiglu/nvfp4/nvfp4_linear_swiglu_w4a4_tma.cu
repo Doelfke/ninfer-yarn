@@ -57,7 +57,7 @@ void launch_nvfp4_linear_swiglu_w4a4_tma(const std::uint8_t* activation_codes,
             "nvfp4 LinearSwiGLU TMA requires a positive M256 full-tile token count");
     }
 
-    using Geometry                     = Nvfp4MlpGateUpGeometry;
+    using Geometry                     = Nvfp4N34816K5120;
     constexpr std::size_t kSharedBytes = sizeof(Nvfp4LinearSwiGluTmaSharedStorage<M256N128S3>);
     static const bool kConfigured      = [] {
         CUDA_CHECK(cudaFuncSetAttribute(nvfp4_linear_swiglu_w4a4_tma_kernel<Geometry, M256N128S3>,

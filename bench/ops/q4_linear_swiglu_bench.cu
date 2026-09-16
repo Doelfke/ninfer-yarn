@@ -1,5 +1,6 @@
 // Cold-cache public Op benchmark for the registered Q4 LinearSwiGLU profile.
 
+#include "core/weight.h"
 #include "ninfer/ops/linear_swiglu.h"
 
 #include "core/device.h"
@@ -102,9 +103,9 @@ int main(int argc, char** argv) {
         DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_t);
         DeviceBuffer output(static_cast<std::size_t>(kOutputRows) * max_t * sizeof(std::uint16_t));
         bench::PackedQuantizedWeight packed = bench::make_row_split_weight(
-            QType::Q4G64_F16S, kGateUpRows, kHidden, kHidden, {0x31, 0xa5, 0x3c00});
+            QType::Q4_G64_FP16, kGateUpRows, kHidden, kHidden, {0x31, 0xa5, 0x3c00});
         const std::size_t workspace_capacity = ops::linear_swiglu_workspace_capacity_bytes(
-            QType::Q4G64_F16S, kGateUpRows, kHidden, min_t, max_t);
+            QType::Q4_G64_FP16, kGateUpRows, kHidden, min_t, max_t);
         WorkspaceArena workspace(std::max<std::size_t>(workspace_capacity, 256));
 
         const auto launch = [&](std::int32_t tokens, cudaStream_t launch_stream) {

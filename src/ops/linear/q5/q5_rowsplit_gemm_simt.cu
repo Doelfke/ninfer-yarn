@@ -1,3 +1,4 @@
+#include "core/weight.h"
 #include "core/device.h"
 #include "ops/common/math.h"
 #include "ops/common/token_slices.h"
@@ -7,7 +8,6 @@
 #include <cuda_bf16.h>
 
 #include <cstdint>
-#include <stdexcept>
 
 namespace ninfer::ops::detail {
 namespace {
@@ -46,65 +46,6 @@ void launch_simt_route(const Tensor& x, const Weight& w, Tensor& out, cudaStream
     });
 }
 
-template <int Cols, int FullSlabs, int Stride>
-void launch_split2(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    constexpr int kThreads = 2 * 32;
-    const dim3 grid(static_cast<unsigned>(out.ne[0]), 1u, 1u);
-    q5_rowsplit_gemm_simt_split2_kernel<Q5RowSplitSimtSchedule, Cols, FullSlabs, Stride>
-        <<<grid, kThreads, 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
-            static_cast<const std::uint8_t*>(w.qhigh), static_cast<const std::uint8_t*>(w.scales),
-            static_cast<__nv_bfloat16*>(out.data), out.ne[0], x.ne[0], x.ne[1], w.padded_shape[1],
-            FullSlabs);
-}
-
-template <int Cols>
-void dispatch_split2_cols(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    if (w.k == 6144) {
-        launch_split2<Cols, 6, 6144>(x, w, out, stream);
-    } else if (w.k == 17408) {
-        launch_split2<Cols, 17, 17408>(x, w, out, stream);
-    } else {
-        throw std::invalid_argument("q5 split2 SIMT: unsupported exact K");
-    }
-}
-
-template <int Cols>
-void launch_split4(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    constexpr int kThreads = 4 * 32;
-    const dim3 grid(static_cast<unsigned>(out.ne[0]), 1u, 1u);
-    const std::int32_t out_ld = static_cast<std::int32_t>(out.nb[1] / sizeof(__nv_bfloat16));
-    q5_rowsplit_gemm_simt_split4_kernel<Q5RowSplitSimtSchedule, Cols, 5, 5120>
-        <<<grid, kThreads, 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
-            static_cast<const std::uint8_t*>(w.qhigh), static_cast<const std::uint8_t*>(w.scales),
-            static_cast<__nv_bfloat16*>(out.data), nullptr, out.ne[0], out_ld, x.ne[0], x.ne[1],
-            w.padded_shape[1], 5);
-}
-
-template <class Launch>
-void dispatch_exact_cols(std::int32_t cols, Launch&& launch) {
-    switch (cols) {
-    case 2:
-        launch.template operator()<2>();
-        return;
-    case 3:
-        launch.template operator()<3>();
-        return;
-    case 4:
-        launch.template operator()<4>();
-        return;
-    case 5:
-        launch.template operator()<5>();
-        return;
-    case 6:
-        launch.template operator()<6>();
-        return;
-    default:
-        throw std::invalid_argument("q5 exact SIMT: column count must be in [2,6]");
-    }
-}
-
 } // namespace
 
 void launch_q5_simt_r8_c4(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
@@ -113,19 +54,6 @@ void launch_q5_simt_r8_c4(const Tensor& x, const Weight& w, Tensor& out, cudaStr
 
 void launch_q5_simt_r8_c8(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
     launch_simt_route<8>(x, w, out, stream);
-}
-
-void launch_q5_simt_split2_exact(const Tensor& x, const Weight& w, Tensor& out,
-                                 cudaStream_t stream) {
-    dispatch_exact_cols(x.ne[1],
-                        [&]<int Cols>() { dispatch_split2_cols<Cols>(x, w, out, stream); });
-    CUDA_CHECK(cudaGetLastError());
-}
-
-void launch_q5_simt_split4_exact(const Tensor& x, const Weight& w, Tensor& out,
-                                 cudaStream_t stream) {
-    dispatch_exact_cols(x.ne[1], [&]<int Cols>() { launch_split4<Cols>(x, w, out, stream); });
-    CUDA_CHECK(cudaGetLastError());
 }
 
 } // namespace ninfer::ops::detail

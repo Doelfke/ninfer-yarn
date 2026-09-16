@@ -15,7 +15,7 @@ endif()
 project(ninfer LANGUAGES C CXX CUDA)
 
 # --- Global settings ---------------------------------------------------------
-option(NINFER_BUILD_APPS "Build the NInfer CLI and server" ON)
+option(NINFER_BUILD_APPS "Build the NInfer CLI, server and perplexity evaluator" ON)
 option(BUILD_TESTING "Build NInfer tests" OFF)
 option(NINFER_BUILD_BENCHMARKS "Build NInfer benchmarks" OFF)
 
@@ -29,45 +29,18 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Ninja")
-  set_property(GLOBAL PROPERTY JOB_POOLS cuda_link=1)
-  set(CMAKE_JOB_POOL_LINK cuda_link)
+  set_property(GLOBAL PROPERTY JOB_POOLS ninfer_link=1)
+  set(CMAKE_JOB_POOL_LINK ninfer_link)
 endif()
 
-if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.1)
-  message(FATAL_ERROR
-    "NInfer requires CUDA 13.1 or newer; found CUDA compiler "
-    "${CMAKE_CUDA_COMPILER_VERSION}")
-endif()
-
-set(NINFER_BUILD_MEDIA_ACQUIRE OFF)
+# Tests also exercise product input, logging and protocol adapters.
+set(NINFER_BUILD_PRODUCT_SUPPORT OFF)
 if(NINFER_BUILD_APPS OR BUILD_TESTING)
-  set(NINFER_BUILD_MEDIA_ACQUIRE ON)
+  set(NINFER_BUILD_PRODUCT_SUPPORT ON)
 endif()
 
-set(NINFER_BUILD_PROMPT_INPUT OFF)
-if(NINFER_BUILD_APPS OR BUILD_TESTING)
-  set(NINFER_BUILD_PROMPT_INPUT ON)
-endif()
-
-set(NINFER_BUILD_SERVE OFF)
-if(NINFER_BUILD_APPS OR BUILD_TESTING)
-  set(NINFER_BUILD_SERVE ON)
-endif()
-
-find_package(CUDAToolkit REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-  libavformat>=60 libavcodec>=60 libavutil>=58 libswscale>=7)
-if(NINFER_BUILD_MEDIA_ACQUIRE)
-  pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl>=7.85)
-endif()
-find_package(Threads REQUIRED)
-
-if(NINFER_BUILD_APPS OR BUILD_TESTING)
-  # Product operational logging is an offline, repository-pinned dependency. Core-only builds do
-  # not configure or link it.
-  add_subdirectory(third_party/spdlog)
-endif()
+include(cmake/Dependencies.cmake)
+include(cmake/NinferTargets.cmake)
 
 # --- Subdirectories ----------------------------------------------------------
 add_subdirectory(src)

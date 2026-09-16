@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/weight.h"
 #include "core/arena.h"
 #include "core/layout.h"
 #include "core/tensor.h"
@@ -53,7 +54,5 @@ inline std::size_t nvfp4_w4a4_workspace_capacity_bytes(std::int32_t tokens,
 void launch_nvfp4_w4a4_quantize(const Tensor& x, const Weight& weight, Nvfp4W4a4Workspace workspace,
                                 cudaStream_t stream);
 
-void launch_nvfp4_w4a4(const Tensor& x, const Weight& weight, Tensor& out,
-                       Nvfp4W4a4Workspace workspace, cudaStream_t stream);
 
 } // namespace ninfer::ops::detail

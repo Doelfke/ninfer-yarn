@@ -1,3 +1,4 @@
+#include "core/weight.h"
 #include "core/device.h"
 #include "ops/common/math.h"
 #include "ops/common/token_slices.h"

@@ -1,3 +1,4 @@
+#include "core/weight.h"
 #include "ops/linear_swiglu/q4/q4_linear_swiglu_kernels.h"
 
 #include "ops/linear_swiglu/q4/q4_linear_swiglu_gemm_mma.cuh"

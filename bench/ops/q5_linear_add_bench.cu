@@ -1,5 +1,6 @@
 // Cold-cache public Op benchmark for registered Q5 LinearAdd profiles.
 
+#include "core/weight.h"
 #include "ninfer/ops/linear_add.h"
 
 #include "core/device.h"
@@ -108,9 +109,9 @@ int main(int argc, char** argv) {
         DeviceBuffer input    = bench::make_bf16(static_cast<std::size_t>(options.hidden) * max_t);
         DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(kRows) * max_t);
         bench::PackedQuantizedWeight packed = bench::make_row_split_weight(
-            QType::Q5G64_F16S, kRows, options.hidden, options.hidden, {0x31, 0xa5, 0x3c00});
+            QType::Q5_G64_FP16, kRows, options.hidden, options.hidden, {0x31, 0xa5, 0x3c00});
         const std::size_t workspace_capacity = ops::linear_add_workspace_capacity_bytes(
-            QType::Q5G64_F16S, kRows, options.hidden, min_t, max_t);
+            QType::Q5_G64_FP16, kRows, options.hidden, min_t, max_t);
         WorkspaceArena workspace(std::max<std::size_t>(workspace_capacity, 256));
 
         const auto launch = [&](std::int32_t tokens, cudaStream_t launch_stream) {

@@ -1,3 +1,4 @@
+#include "core/weight.h"
 #include "ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_plan.h"
 
 #include "core/layout.h"
@@ -21,15 +22,15 @@ enum class Nvfp4LinearSwiGluRoute {
     TmaFusedW4A4,
 };
 
-constexpr std::int32_t kTmaBlockM = 256;
+constexpr std::int32_t kTmaBlockM      = 256;
 constexpr std::int32_t kFusedMaxTokens = 128;
 
 Nvfp4LinearSwiGluRoute resolve_route(LinearPolicy policy, std::int32_t tokens) {
     if (tokens <= 0) { throw std::invalid_argument("nvfp4 linear_swiglu: T must be positive"); }
-    if (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA4) {
-        throw std::invalid_argument("nvfp4 linear_swiglu admits only A16 or A4");
+    if (!valid_linear_policy(policy)) {
+        throw std::invalid_argument("nvfp4 linear_swiglu: invalid compute policy");
     }
-    if (policy == LinearPolicy::A16Only) {
+    if (policy == LinearPolicy::A16Only || policy == LinearPolicy::AllowA8) {
         if (tokens == 1) { return Nvfp4LinearSwiGluRoute::DecodeFusedA16; }
         if (tokens <= 16) { return Nvfp4LinearSwiGluRoute::SmallTFusedA16; }
         throw std::invalid_argument("nvfp4 linear_swiglu A16 is registered only through T=16");
@@ -51,10 +52,9 @@ struct Nvfp4LinearSwiGluWorkspace {
 template <class Allocator>
 Nvfp4LinearSwiGluWorkspace allocate_baseline_workspace(Allocator& allocator, std::int32_t tokens) {
     Nvfp4LinearSwiGluWorkspace out;
-    out.projected =
-        allocator.alloc(DType::BF16, {Nvfp4MlpGateUpGeometry::kOutputRows, tokens}, 256);
+    out.projected = allocator.alloc(DType::BF16, {Nvfp4N34816K5120::kOutputRows, tokens}, 256);
     const std::size_t linear_bytes = linear_workspace_capacity_bytes(
-        QType::NVFP4, Nvfp4MlpGateUpGeometry::kOutputRows, Nvfp4MlpGateUpGeometry::kInputRows,
+        QType::NVFP4, Nvfp4N34816K5120::kOutputRows, Nvfp4N34816K5120::kInputRows,
         LinearPolicy::AllowA4, tokens, tokens);
     out.linear = allocator.alloc_bytes(linear_bytes, 256);
     return out;
@@ -62,7 +62,7 @@ Nvfp4LinearSwiGluWorkspace allocate_baseline_workspace(Allocator& allocator, std
 
 template <class Allocator>
 Nvfp4W4a4Workspace allocate_fused_workspace(Allocator& allocator, std::int32_t tokens) {
-    return allocate_nvfp4_w4a4_workspace(allocator, tokens, Nvfp4MlpGateUpGeometry::kInputRows);
+    return allocate_nvfp4_w4a4_workspace(allocator, tokens, Nvfp4N34816K5120::kInputRows);
 }
 
 std::size_t baseline_workspace_bytes(std::int32_t tokens) {
@@ -87,7 +87,9 @@ std::size_t nvfp4_linear_swiglu_workspace_capacity_bytes(LinearPolicy policy,
     }
     (void)resolve_route(policy, min_tokens);
     (void)resolve_route(policy, max_tokens);
-    if (policy == LinearPolicy::A16Only || max_tokens <= 4) { return 0; }
+    if ((policy == LinearPolicy::A16Only || policy == LinearPolicy::AllowA8) || max_tokens <= 4) {
+        return 0;
+    }
 
     std::size_t maximum = 0;
     if (min_tokens <= kFusedMaxTokens && max_tokens >= 5) {
@@ -142,7 +144,7 @@ void nvfp4_linear_swiglu_dispatch(const Tensor& x, const Weight& weight, Tensor&
     Nvfp4LinearSwiGluWorkspace scratch = allocate_baseline_workspace(workspace, x.ne[1]);
     WorkspaceArena linear_workspace(scratch.linear);
     linear(x, weight, scratch.projected, LinearPolicy::AllowA4, linear_workspace, stream);
-    constexpr std::int32_t kIntermediate = Nvfp4MlpGateUpGeometry::kOutputRows / 2;
+    constexpr std::int32_t kIntermediate = Nvfp4N34816K5120::kOutputRows / 2;
     silu_mul(scratch.projected.slice(0, 0, kIntermediate),
              scratch.projected.slice(0, kIntermediate, kIntermediate), out, stream);
 }
