@@ -68,7 +68,7 @@ namespace {
 // loader reads that object once and never places it in the device arena.
 namespace vcpu_load {
 
-ObjectHandle object_for(artifact::Binder& b, const std::string& name) {
+artifact::ObjectHandle object_for(artifact::Binder& b, const std::string& name) {
     const auto& reader = b.reader();
     const auto found   = reader.directory().bindings.find(name);
     if (found == reader.directory().bindings.end()) {
@@ -183,6 +183,8 @@ load_vision_cpu_weights(artifact::Binder& b, const VisionConfig& v, const TextCo
     w.merger_fc2_bias  = dequant_bf16(b, "vision/merger/fc2_bias");                  // [O]
     return w;
 }
+
+} // namespace
 
 LoadPlan plan_load(const artifact::Reader& reader, LoadOptions options) {
     auto out     = std::make_unique<LoadPlan::Impl>();
