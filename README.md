@@ -58,8 +58,8 @@ services:
 
 With dflash2:
 ```
-  "--max-context", "410000",
-  "--kv-capacity", "410000",
+  "--max-context", "400000",
+  "--kv-capacity", "400000",
   "--spec", "dflash2",
   "--draft-tokens", "7",
 ```
