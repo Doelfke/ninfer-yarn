@@ -105,9 +105,9 @@ std::string serve_usage_text(const char* argv0) {
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
            "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
-           "       --tolerant-tool-calls recovers complete Qwen calls with malformed wrapper/suffix output\n"
-           "       and keeps a final tool call cut by the output budget, plus a complete call whose name is\n"
-           "       not in the declared tools\n"
+           "       --tolerant-tool-calls recovers complete Qwen calls with malformed wrapper/suffix output,\n"
+           "       drops a duplicated parameter name (keeping the first occurrence), and keeps a final tool\n"
+           "       call cut by the output budget, plus a complete call whose name is not in the declared tools\n"
            "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
            "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
            "       --device-state-slots is extra checkpoint capacity beyond active lanes; "

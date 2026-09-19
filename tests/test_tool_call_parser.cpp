@@ -939,6 +939,60 @@ int test_tolerant_truncated_final_parameter_value() {
     return failures;
 }
 
+int test_tolerant_duplicate_parameter_name() {
+    using Reason = ninfer::ToolCallParseFallbackReason;
+    // The model emitted the same parameter name twice. The first occurrence is the one the
+    // call's contract sees, so tolerant mode keeps it and drops the later duplicate; strict mode
+    // keeps the all-or-nothing rejection. The envelope markup is assembled from split literals so
+    // the complete tag sequences never appear verbatim in this test.
+    const auto contract =
+        output_contract_for("grep_search", Json{{"query", Json{{"type", "string"}}},
+                                                {"isRegexp",     Json{{"type", "boolean"}}},
+                                                {"includePattern",
+                                                 Json{{"type", "string"}}}});
+
+    const std::string marker  = "<" "tool_call>";
+    const std::string open_fn = "<" "function=grep_search>";
+    const std::string text    =
+        marker + "\n" + open_fn + "\n" +
+        "<parameter=query>\n^#{1,3} \n</parameter>\n" +
+        "<parameter=isRegexp>\ntrue\n</parameter>\n" +
+        "<parameter=includePattern>\nREADME.md\n</parameter>\n" +
+        "<parameter=isRegexp>\ntrue\n</parameter>\n" +
+        "</function>\n" "</" "tool_call>";
+
+    const auto tolerant = fi::parse_qwen_tool_call_output(text, 64, *contract, /*tolerant*/ true);
+    int failures        = 0;
+    failures += check(tolerant.is_tool_call_response,
+                      "tolerant mode leaked a duplicated-parameter call to text");
+    failures +=
+        check(tolerant.tool_calls.size() == 1,
+              "tolerant mode recovered the wrong call count for a duplicated parameter");
+    if (tolerant.tool_calls.size() == 1) {
+        const auto& call = tolerant.tool_calls.front();
+        failures +=
+            check(call.name == "grep_search", "duplicated-parameter recovery lost the name");
+        const Json arguments = Json::parse(call.arguments_json);
+        failures += check(arguments.at("query") == "^#{1,3} ",
+                          "duplicated-parameter recovery lost the first parameter");
+        failures += check(arguments.count("isRegexp") == 1 && arguments.at("isRegexp") == true,
+                          "duplicated-parameter recovery did not keep only the first occurrence");
+        failures += check(arguments.at("includePattern") == "README.md",
+                          "duplicated-parameter recovery lost a following parameter");
+    }
+    failures += check(tolerant.diagnostics.fallback_reason == Reason::None,
+                      "duplicated-parameter recovery reported a spurious fallback reason");
+    failures += check(tolerant.diagnostics.duplicate_parameters_dropped == 1,
+                      "duplicated-parameter recovery did not count the dropped duplicate");
+
+    const auto strict = fi::parse_qwen_tool_call_output(text, 64, *contract);
+    failures += check(!strict.is_tool_call_response, "strict mode accepted a duplicated parameter");
+    failures += check(strict.tool_calls.empty(), "strict mode retained a duplicated-parameter call");
+    failures += check(strict.diagnostics.fallback_reason == Reason::DuplicateParameter,
+                      "strict mode lost the duplicate-parameter fallback");
+    return failures;
+}
+
 int test_tolerant_undeclared_name_stays_structured() {
     using Reason = ninfer::ToolCallParseFallbackReason;
 
@@ -1003,6 +1057,7 @@ int main() {
     failures += test_tolerant_truncated_final_call();
     failures += test_tolerant_missing_function_close_bracket();
     failures += test_tolerant_truncated_final_parameter_value();
+    failures += test_tolerant_duplicate_parameter_name();
     failures += test_tolerant_undeclared_name_stays_structured();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;

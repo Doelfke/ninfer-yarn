@@ -32,6 +32,7 @@ struct RawParameter {
 struct RawToolCall {
     std::string_view name;
     std::vector<RawParameter> parameters;
+    std::uint32_t duplicate_parameters_dropped = 0;
 };
 
 enum class JsonValueKind : std::uint8_t {
@@ -548,13 +549,27 @@ private:
             return FallbackReason::MalformedStructure;
         }
         const std::string_view name = text_.substr(name_begin, name_end - name_begin);
+        const std::size_t value_begin = name_end + 1;
         if (std::any_of(call.parameters.begin(), call.parameters.end(),
                         [&](const RawParameter& existing) { return existing.name == name; })) {
+            // Tolerant mode only: the model sometimes emits the same parameter name twice. The
+            // first occurrence is the one the call's contract sees, so keep it and drop the
+            // later duplicate instead of returning the whole region to text. The duplicate is
+            // skipped by advancing past its value and close tag; a duplicate that is itself
+            // structurally broken cannot be skipped, so the call falls through as a failure.
+            if (tolerant_) {
+                std::size_t duplicate_end = 0;
+                if (find_parameter_close(value_begin, duplicate_end)) {
+                    pos = duplicate_end + kParamClose.size();
+                    ++call.duplicate_parameters_dropped;
+                    return FallbackReason::None;
+                }
+                return FallbackReason::MalformedStructure;
+            }
             return FallbackReason::DuplicateParameter;
         }
 
-        const std::size_t value_begin = name_end + 1;
-        std::size_t value_end         = 0;
+        std::size_t value_end = 0;
         if (!find_parameter_close(value_begin, value_end)) {
             if (tolerant_) {
                 // Tolerant mode only: the region ends before the closing tag, so the output
@@ -621,6 +636,8 @@ GeneratedToolCall normalize_raw_tool_call(const RawToolCall& raw, const Contract
                                           ToolCallParseDiagnostics& diagnostics) {
     const Contract::Tool* tool = find_tool_contract(contract, raw.name);
     if (tool != nullptr && !tool->unambiguous) { tool = nullptr; }
+
+    diagnostics.duplicate_parameters_dropped += raw.duplicate_parameters_dropped;
 
     std::string arguments = "{";
     bool first            = true;

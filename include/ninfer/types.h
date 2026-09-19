@@ -345,6 +345,9 @@ struct ToolCallParseDiagnostics {
     std::uint32_t structured_call_count         = 0;
     std::uint32_t empty_arguments_omitted       = 0;
     std::uint32_t schema_mismatch_arguments     = 0;
+    // Tolerant recovery dropped later occurrences of a duplicated parameter name; the first
+    // occurrence was kept. Strict mode never reports a drop because it rejects the region.
+    std::uint32_t duplicate_parameters_dropped  = 0;
     ToolCallParseFallbackReason fallback_reason = ToolCallParseFallbackReason::None;
 
     [[nodiscard]] friend constexpr bool
