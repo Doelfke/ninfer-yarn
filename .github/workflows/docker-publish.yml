@@ -12,8 +12,8 @@ name: Docker publish
 # Automatic runs: tags starting with "v" (e.g. v0.9.1).
 #
 # The image is <DOCKERHUB_USERNAME>/ninfer-yarn:<tag>. Publishing requires the
-# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets
-# (Settings > Secrets and variables > Actions > Repositories).
+# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets, defined on the "Docker Build"
+# environment (Settings > General > Environments).
 on:
   workflow_dispatch:
     inputs:
@@ -43,6 +43,7 @@ permissions:
 jobs:
   build:
     name: Build and publish
+    environment: Docker Build
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -59,6 +60,9 @@ jobs:
           INPUT_PUSH: ${{ inputs.push }}
           HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
           TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' && 'yes' || 'no' }}
+          CAND_A: ${{ secrets.DOCKERHUB_ACCESS_TOKEN != '' && 'DOCKERHUB_ACCESS_TOKEN' || '' }}
+          CAND_B: ${{ secrets.DOCKERHUB_PASSWORD != '' && 'DOCKERHUB_PASSWORD' || '' }}
+          CAND_C: ${{ secrets.HUB_TOKEN != '' && 'HUB_TOKEN' || '' }}
         run: |
           # Tag events (v1.2.3) take their tag from the ref and always
           # push; manual runs use the supplied tag and push flag.
@@ -76,11 +80,16 @@ jobs:
 
           PLATFORMS="${INPUT_PLATFORMS:-linux/amd64}"
           if [ "${PUSH}" = "true" ] && [ "${TOKEN_SET}" != "yes" ]; then
-            echo "::error::Cannot push: repository secret DOCKERHUB_TOKEN is empty. Set it under Settings > Secrets and variables > Actions > Repositories (exact name, case-sensitive)."
+            CANDS="${CAND_A}${CAND_A:+, }${CAND_B}${CAND_B:+, }${CAND_C}"
+            if [ -n "${CANDS}" ]; then
+              echo "::error::Secret DOCKERHUB_TOKEN is not set, but this workflow detected other token-like secret(s): ${CANDS}. Rename it exactly to DOCKERHUB_TOKEN on the 'Docker Build' environment, or update the workflow reference."
+            else
+              echo "::error::Cannot push: secret DOCKERHUB_TOKEN is empty. Set it (Docker Hub access/refresh token) on the 'Docker Build' environment (exact name, case-sensitive). For a build-only check, re-run with push=no."
+            fi
             exit 1
           fi
           if [ "${PUSH}" = "true" ] && [ -z "${HUB_USER}" ]; then
-            echo "::error::Cannot push: repository secret DOCKERHUB_USERNAME is empty. Set it under Settings > Secrets and variables > Actions > Repositories (exact name, case-sensitive). For a build-only check, re-run with push=no."
+            echo "::error::Cannot push: secret DOCKERHUB_USERNAME is empty. Set it on the 'Docker Build' environment (exact name, case-sensitive). For a build-only check, re-run with push=no."
             exit 1
           fi
           if [ "${PUSH}" = "true" ]; then
