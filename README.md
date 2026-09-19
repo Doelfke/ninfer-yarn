@@ -19,7 +19,7 @@ Example:
 
 services:
   ninfer:
-    image: ninfer:local
+    image: doelfke/ninfer-yarn
     command: [
         "ninfer-serve", 
         "/models/qwen3_8_27b_nvfp4.ninfer", 
