@@ -12,7 +12,8 @@ name: Docker publish
 # Automatic runs: tags starting with "v" (e.g. v0.9.1).
 #
 # The image is <DOCKERHUB_USERNAME>/ninfer-yarn:<tag>. Publishing requires the
-# DOCKERHUB_USERNAME repository variable and the DOCKERHUB_TOKEN secret.
+# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets
+# (Settings > Secrets and variables > Actions > Repositories).
 on:
   workflow_dispatch:
     inputs:
@@ -57,12 +58,8 @@ jobs:
           INPUT_PLATFORMS: ${{ inputs.platforms }}
           INPUT_PUSH: ${{ inputs.push }}
           HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' && 'yes' || 'no' }}
         run: |
-          if [ -z "${HUB_USER}" ]; then
-            echo "::error::DOCKERHUB_USERNAME repository variable is not set. Configure it (and the DOCKERHUB_TOKEN secret) to publish."
-            exit 1
-          fi
-
           # Tag events (v1.2.3) take their tag from the ref and always
           # push; manual runs use the supplied tag and push flag.
           if [ "${EVENT_NAME}" = "push" ] && [ -n "${REF_NAME}" ]; then
@@ -78,7 +75,20 @@ jobs:
           fi
 
           PLATFORMS="${INPUT_PLATFORMS:-linux/amd64}"
-          TAGS="${HUB_USER}/ninfer-yarn:${TAG}"
+          if [ "${PUSH}" = "true" ] && [ "${TOKEN_SET}" != "yes" ]; then
+            echo "::error::Cannot push: repository secret DOCKERHUB_TOKEN is empty. Set it under Settings > Secrets and variables > Actions > Repositories (exact name, case-sensitive)."
+            exit 1
+          fi
+          if [ "${PUSH}" = "true" ] && [ -z "${HUB_USER}" ]; then
+            echo "::error::Cannot push: repository secret DOCKERHUB_USERNAME is empty. Set it under Settings > Secrets and variables > Actions > Repositories (exact name, case-sensitive). For a build-only check, re-run with push=no."
+            exit 1
+          fi
+          if [ "${PUSH}" = "true" ]; then
+            TAGS="${HUB_USER}/ninfer-yarn:${TAG}"
+          else
+            # Build-only verification: no registry reference needed.
+            TAGS="ninfer-yarn:${TAG}"
+          fi
 
           {
             echo "tag=${TAG}"
