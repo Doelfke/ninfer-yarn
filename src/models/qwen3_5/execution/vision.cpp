@@ -558,10 +558,15 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
                                control.segment_length,
                                static_cast<int>(std::thread::hardware_concurrency()),
                                visible);
-            // Synchronous transfer so the host `visible` buffer is fully consumed before it can be
-            // freed; the device scatter in the text prefill then reads the completed handoff.
-            CUDA_CHECK(cudaMemcpy(output.data, visible.data(),
-                                  static_cast<std::size_t>(visible.size()) * 2,
+            const auto visible_bf16 = vision_cpu::to_bf16(visible);
+            if (visible_bf16.size() * sizeof(std::uint16_t) != output.bytes()) {
+                throw std::logic_error("vision_cpu handoff size does not match the output binding");
+            }
+            // Synchronous transfer so the host `visible_bf16` buffer is fully consumed before it
+            // can be freed; the device scatter in the text prefill then reads the completed
+            // handoff.
+            CUDA_CHECK(cudaMemcpy(output.data, visible_bf16.data(),
+                                  visible_bf16.size() * sizeof(std::uint16_t),
                                   cudaMemcpyHostToDevice));
             active_item_          = active->prepared_item_index;
             active_handoff_bytes_ = output.bytes();
