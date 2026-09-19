@@ -61,7 +61,7 @@ void offset_i32_positions(const Tensor& source, const Tensor& delta, Tensor& des
  *   Rounding uses round-half-away-from-zero via +0.5f before truncation.
  *
  * Logical shapes:
- *   source and destination are contiguous I32 vectors [T].
+ *   source and destination are contiguous I32 positions tensors [T] or [T,3] (matching shapes); each element is scaled independently.
  *
  * Numeric:
  *   factor must be >= 1.0. original_context is a nonnegative I32 threshold.

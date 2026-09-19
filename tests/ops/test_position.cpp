@@ -132,6 +132,57 @@ int lane_offset_case(int width, int batch, int axes, bool in_place) {
     return failures;
 }
 
+// Independent (host) mirror of the scaling formula in src/ops/kernel/position.cuh. The device
+// kernel is integer-only, so the oracle uses the identical integer arithmetic to stay exact with
+// no floating-point divergence.
+std::int32_t expected_yarn_scale(std::int32_t position, std::int32_t original_context, float factor) {
+    if (position <= original_context) { return position; }
+    const float scaled = static_cast<float>(original_context) +
+                         (static_cast<float>(position - original_context)) / factor + 0.5F;
+    return static_cast<std::int32_t>(scaled);
+}
+
+// Covers the [T] vector form and, with axes==3, the [T,3] MRoPE positions tensor used by the
+// multimodal prefill path (previously rejected by the strict vector shape check).
+int yarn_scale_case(std::int32_t count, std::int32_t axes, std::uint32_t original_context, float factor,
+                    bool in_place) {
+    const std::int64_t elements = static_cast<std::int64_t>(count) * axes;
+    std::vector<std::int32_t> source(static_cast<std::size_t>(elements));
+    for (std::int64_t i = 0; i < elements; ++i) {
+        source[static_cast<std::size_t>(i)] = 190000 + 29 * static_cast<std::int32_t>(i);
+    }
+
+    GuardedDeviceBuffer device_source(static_cast<std::size_t>(elements) * sizeof(std::int32_t));
+    GuardedDeviceBuffer device_output((static_cast<std::size_t>(elements) + 1) * sizeof(std::int32_t));
+    device_source.copy_from_host(source.data(), device_source.bytes());
+    device_output.fill(0xcd);
+
+    Tensor source_tensor(device_source.data(), DType::I32, {count, axes, 1, 1});
+    Tensor output_tensor(device_output.data(), DType::I32, {count, axes, 1, 1});
+    Tensor& destination = in_place ? source_tensor : output_tensor;
+    ops::scale_positions_yarn(source_tensor, original_context, factor, destination, nullptr);
+    cuda_synchronize();
+
+    std::vector<std::int32_t> expected(source.size());
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        expected[i] = expected_yarn_scale(source[i], static_cast<std::int32_t>(original_context), factor);
+    }
+
+    const std::string label =
+        "scale_positions_yarn T=" + std::to_string(count) + " axes=" + std::to_string(axes) +
+        " original_context=" + std::to_string(original_context) + (in_place ? " in-place" : "");
+    int failures = verify_exact(
+        label.c_str(), from_device<std::int32_t>(in_place ? device_source.data() : device_output.data(), expected.size()),
+        expected);
+    if (!in_place) {
+        failures += verify_exact((label + " preserves source").c_str(),
+                                 from_device<std::int32_t>(device_source.data(), source.size()), source);
+    }
+    failures += device_source.verify_guards((label + " source").c_str());
+    if (!in_place) { failures += device_output.verify_guards((label + " destination").c_str()); }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -152,6 +203,19 @@ int main() {
     failures += offset_case(1, -17, false);
     failures += offset_case(6, 31, true);
     failures += offset_case(1024, -257, false);
+    // The [T] form: positions are far above the original context so the scale branch is
+    // exercised, including a non-integer (p - original_context) / factor that rounds.
+    for (bool in_place : {false, true}) {
+        failures += yarn_scale_case(1, 1, 4, 2.0F, in_place);
+        failures += yarn_scale_case(7, 1, 4, 2.0F, in_place);
+        failures += yarn_scale_case(1024, 1, 131072, 2.0F, in_place);
+    }
+    // The [T,3] MRoPE form is what the multimodal prefill path passes; the scale must reach every
+    // axis*token element in a single contiguous in-place write.
+    for (bool in_place : {false, true}) {
+        failures += yarn_scale_case(7, 3, 4, 2.0F, in_place);
+        failures += yarn_scale_case(400, 3, 131072, 1.5F, in_place);
+    }
     std::cout << (failures ? "FAIL" : "OK") << " position\n";
     return failures ? 1 : 0;
 }

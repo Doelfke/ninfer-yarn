@@ -9,6 +9,18 @@
 namespace ninfer::ops {
 namespace {
 
+std::int64_t position_numel(const Tensor& tensor) {
+    return static_cast<std::int64_t>(tensor.ne[0]) * tensor.ne[1];
+}
+
+void require_i32_position_vector(const Tensor& tensor, const char* name) {
+    if (tensor.dtype != DType::I32 || tensor.ne[0] <= 0 || tensor.ne[1] <= 0 || tensor.ne[2] != 1 ||
+        tensor.ne[3] != 1 || !tensor.is_contiguous() || tensor.data == nullptr) {
+        throw std::invalid_argument(std::string(name) +
+                                    " must be a non-empty contiguous I32 positions tensor");
+    }
+}
+
 void require_i32_vector(const Tensor& tensor, const char* name) {
     if (tensor.dtype != DType::I32 || tensor.ne[0] <= 0 || tensor.ne[1] != 1 || tensor.ne[2] != 1 ||
         tensor.ne[3] != 1 || !tensor.is_contiguous() || tensor.data == nullptr) {
@@ -50,10 +62,10 @@ void offset_i32_positions(const Tensor& source, const Tensor& delta, Tensor& des
 
 void scale_positions_yarn(const Tensor& source, std::uint32_t original_context, float factor,
                           Tensor& destination, cudaStream_t stream) {
-    require_i32_vector(source, "scale_positions_yarn source");
-    require_i32_vector(destination, "scale_positions_yarn destination");
-    if (source.ne[0] != destination.ne[0]) {
-        throw std::invalid_argument("scale_positions_yarn: source and destination shapes differ");
+    require_i32_position_vector(source, "scale_positions_yarn source");
+    require_i32_position_vector(destination, "scale_positions_yarn destination");
+    if (position_numel(source) != position_numel(destination)) {
+        throw std::invalid_argument("scale_positions_yarn: source and destination sizes differ");
     }
     if (source.data != destination.data) {
         throw std::invalid_argument("scale_positions_yarn: source and destination must be the same tensor (in-place only)");
