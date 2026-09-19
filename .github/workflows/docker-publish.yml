@@ -42,7 +42,7 @@ permissions:
 jobs:
   build:
     name: Build and publish
-    runs-on: ubuntu24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
       - name: Check out repository
