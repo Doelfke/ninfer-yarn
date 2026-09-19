@@ -1,0 +1,122 @@
+name: Docker publish
+
+# Builds the NInfer CUDA image (multi-stage) and publishes it to Docker Hub.
+# The CUDA toolkit is provided by the nvidia/cuda base image in the Dockerfile;
+# the runner needs no GPU and no NVIDIA tooling.
+#
+# Manual runs:  Actions > "Docker publish" > Run workflow
+#   - tag:       image tag to publish (default: "latest")
+#   - platforms: target architectures (default: linux/amd64)
+#   - push:      "no" runs a build-only verification without pushing
+#
+# Automatic runs: tags starting with "v" (e.g. v0.9.1).
+#
+# The image is <DOCKERHUB_USERNAME>/ninfer-yarn:<tag>. Publishing requires the
+# DOCKERHUB_USERNAME repository variable and the DOCKERHUB_TOKEN secret.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish"
+        required: false
+        default: "latest"
+      platforms:
+        description: "Target platforms (comma-separated)"
+        required: false
+        default: "linux/amd64"
+      push:
+        description: "Push the image to Docker Hub"
+        type: choice
+        required: false
+        default: "yes"
+        options:
+          - "yes"
+          - "no"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: ubuntu24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve tag, platforms, and push flag
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+          INPUT_PUSH: ${{ inputs.push }}
+          HUB_USER: ${{ vars.DOCKERHUB_USERNAME }}
+        run: |
+          if [ -z "${HUB_USER}" ]; then
+            echo "::error::DOCKERHUB_USERNAME repository variable is not set. Configure it (and the DOCKERHUB_TOKEN secret) to publish."
+            exit 1
+          fi
+
+          # Tag events (v1.2.3) take their tag from the ref and always
+          # push; manual runs use the supplied tag and push flag.
+          if [ "${EVENT_NAME}" = "push" ] && [ -n "${REF_NAME}" ]; then
+            TAG="${REF_NAME}"
+            PUSH=true
+          else
+            TAG="${INPUT_TAG:-latest}"
+            if [ "${INPUT_PUSH}" = "no" ]; then
+              PUSH=false
+            else
+              PUSH=true
+            fi
+          fi
+
+          PLATFORMS="${INPUT_PLATFORMS:-linux/amd64}"
+          TAGS="${HUB_USER}/ninfer-yarn:${TAG}"
+
+          {
+            echo "tag=${TAG}"
+            echo "push=${PUSH}"
+            echo "platforms=${PLATFORMS}"
+            echo "tags<<NINFER_TAGS"
+            printf '%s\n' "${TAGS}"
+            echo "NINFER_TAGS"
+          } >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG} push=${PUSH} platforms=${PLATFORMS}"
+          echo "tags:"
+          printf '%s\n' "${TAGS}"
+
+      - name: Set up QEMU (for cross-arch builds)
+        if: contains(steps.resolve.outputs.platforms, 'linux/arm64')
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-driver
+
+      - name: Log in to Docker Hub
+        if: steps.resolve.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build${{ steps.resolve.outputs.push == 'true' && ' and push' || '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ steps.resolve.outputs.platforms }}
+          push: ${{ steps.resolve.outputs.push == 'true' }}
+          tags: ${{ steps.resolve.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
