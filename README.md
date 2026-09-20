@@ -12,8 +12,21 @@ This is a fork of [Ninfer](https://github.com/gzenz/ninfer), an inference engine
 When using an NVFP4 KV cache, this allows you to reach a 420,000 token context, while having vision enabled, MTP -- supporting 2 sessions at once.  This assumes `maxOutputTokens` is set to 130,000 in your code editor.
 
 
+## Downloading a Model:
+``` bash
+hf download neroued/Qwen3.8-27B-nvfp4-NInfer \
+qwen3_8_27b_nvfp4.ninfer \
+--local-dir models
+```
 
-Example:
+Or try a much faster model:
+``` bash
+hf CaptainArni/Swift-Qwen3.8-27B-NInfer \
+qwen3_8_27b_nvfp4swift.ninfer \
+--local-dir models
+```
+
+## Running:
 
 ```bash
 
