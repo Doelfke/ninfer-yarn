@@ -48,6 +48,7 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
       use_cuda_graph(plan.use_cuda_graph), causal_scoring(plan.causal_scoring),
       rope_scaling_factor(plan.rope_scaling_factor),
       rope_scaling_original_context(plan.rope_scaling_original_context),
+      draft_confidence_threshold(plan.draft_confidence_threshold),
       kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
       persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
