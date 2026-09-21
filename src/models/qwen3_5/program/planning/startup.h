@@ -84,6 +84,7 @@ struct SequencePlanningInputs {
     int device          = 0;
     float rope_scaling_factor             = 1.0F;
     std::uint32_t rope_scaling_original_context = 262144;
+    float draft_confidence_threshold          = 0.0F;
     ContextCacheOptions context_cache;
 };
 
@@ -108,6 +109,7 @@ struct SequencePlanImpl {
     int device          = 0;
     float rope_scaling_factor             = 1.0F;
     std::uint32_t rope_scaling_original_context = 262144;
+    float draft_confidence_threshold          = 0.0F;
     ContextCacheOptions context_cache;
     PersistentLayout persistent;
     WorkspacePlan workspace;

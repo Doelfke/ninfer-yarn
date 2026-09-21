@@ -7,6 +7,7 @@
 
 #include "core/nvtx.h"
 #include "ninfer/ops/argmax.h"
+#include "ninfer/ops/draft_verify_extent.h"
 #include "ninfer/ops/dynamic_grouped_conv.h"
 #include "ninfer/ops/context_kv_materialize.h"
 #include "ninfer/ops/rmsnorm_rope.h"
@@ -611,6 +612,20 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                             state_destinations, dflash_rows, envelopes.append);
 
         propose_batch_impl(state, frame, batch_size, k, envelopes);
+        if (frame.proposal_q.data != nullptr &&
+            state.execution.draft_confidence_threshold > 0.0F) {
+            ops::draft_confidence_clamp_verify_extents(
+                frame.proposal_q.slice(2, 0, batch_size), extents, valid_columns,
+                state.execution.draft_confidence_threshold, static_cast<std::int32_t>(k),
+                state.execution.device.stream);
+            // Publish the clamped extent to the egress (a stream-ordered D2D copy) so host
+            // statistics report the extent the target actually verified. Graph-safe: constant
+            // extent of at most kMaximumConcurrency words.
+            CUDA_CHECK(cudaMemcpyAsync(frame.verified_extents.data, extents.data,
+                                       static_cast<std::size_t>(batch_size) *
+                                           static_cast<std::size_t>(sizeof(std::int32_t)),
+                                       cudaMemcpyDeviceToDevice, state.execution.device.stream));
+        }
         ops::speculative_prepare_verify_inputs(anchors, drafts, frontiers, extents, verify_ids,
                                                target_positions, state.execution.device.stream);
 

@@ -576,6 +576,7 @@ public:
     const bool causal_scoring;
     const float rope_scaling_factor;
     const std::uint32_t rope_scaling_original_context;
+    const float draft_confidence_threshold;
     const std::size_t kv_payload_bytes;
     const std::size_t graph_allowance_bytes;
     const WorkspacePlan workspace_plan;

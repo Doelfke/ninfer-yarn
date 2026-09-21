@@ -715,7 +715,8 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
         execution::DFlashBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head, rope_scaling_factor, rope_scaling_original_context},
+             proposal_head, rope_scaling_factor, rope_scaling_original_context,
+             draft_confidence_threshold},
             decoder->text_kv,
             *dflash,
             *io.dflash_decode,
@@ -745,6 +746,14 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
             const std::int32_t accepted_i = dflash_host_egress->accepted_drafts[row];
             const std::uint32_t extent =
                 static_cast<std::uint32_t>(dflash_host_ingress->proposal_extents[row]);
+            // DFlash2 early stop: the target verified the clamped extent (published to the
+            // egress). Use it for the reported drafted/accepted ratio; the validity bound above
+            // stays on the ingress extent (which is >= the clamped extent). The egress copy is
+            // only performed when the threshold is active.
+            const std::uint32_t verified_extent =
+                speculative_backend == SpeculativeBackend::DFlash2 && draft_confidence_threshold > 0.0F
+                    ? static_cast<std::uint32_t>(dflash_host_egress->verified_extents[row])
+                    : extent;
             if (count_i <= 0 || count_i > static_cast<std::int32_t>(width) || accepted_i < 0 ||
                 accepted_i + 1 != count_i || accepted_i > static_cast<std::int32_t>(extent) ||
                 static_cast<std::uint32_t>(count_i) > budgets[row].generated_tokens_remaining ||
@@ -760,7 +769,7 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
                 request.speculative_stats.fallback_steps += 1;
             } else {
                 request.speculative_stats.rounds += 1;
-                request.speculative_stats.drafted_tokens += extent;
+                request.speculative_stats.drafted_tokens += verified_extent;
                 request.speculative_stats.accepted_tokens += static_cast<std::uint32_t>(accepted_i);
                 for (std::int32_t i = 0; i < accepted_i; ++i) {
                     request.speculative_stats.accepted_per_position[static_cast<std::size_t>(i)] +=

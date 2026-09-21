@@ -361,6 +361,8 @@ DFlashDecodeState::DFlashDecodeState(DeviceSpan backing, const DFlashDecodeState
         egress_tensor(offsetof(DFlashDecodeEgress, licensed_counts), DType::I32, {batch});
     accepted_drafts =
         egress_tensor(offsetof(DFlashDecodeEgress, accepted_drafts), DType::I32, {batch});
+    verified_extents =
+        egress_tensor(offsetof(DFlashDecodeEgress, verified_extents), DType::I32, {batch});
     proposal_ids               = layout.proposal_ids.bind(backing);
     proposal_positions         = layout.proposal_positions.bind(backing);
     append_positions           = layout.append_positions.bind(backing);

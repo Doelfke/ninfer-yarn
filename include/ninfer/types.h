@@ -80,6 +80,9 @@ struct SpeculativeOptions {
     // Startup-fixed K: MTP 1..5; DFlash and DFlash2 1..15 (query width K+1).
     std::uint32_t draft_tokens = 0;
     ProposalHead proposal_head = ProposalHead::Full;
+    // DFlash2 only. Per-position top-16 confidence below this value ends the verified
+    // prefix (lossless early-stop). 0.0 disables the clamp.
+    float draft_confidence_threshold = 0.0F;
 };
 
 enum class StartupPhase : std::uint8_t {

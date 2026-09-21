@@ -823,6 +823,15 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         if (options.speculative.draft_tokens == 0 || options.speculative.draft_tokens > 15) {
             throw std::invalid_argument("masked draft window must be in [1,15]");
         }
+        if (options.speculative.draft_confidence_threshold < 0.0F ||
+            options.speculative.draft_confidence_threshold > 1.0F) {
+            throw std::invalid_argument("draft_confidence_threshold must be in [0,1]");
+        }
+        if (options.speculative.draft_confidence_threshold > 0.0F &&
+            options.speculative.backend == SpeculativeBackend::DFlash) {
+            throw std::invalid_argument(
+                "draft_confidence_threshold requires the DFlash2 masked draft backend");
+        }
         break;
     }
     if (device.compute_capability() != 120) {
@@ -853,6 +862,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->device              = inputs.device;
     impl->rope_scaling_factor = inputs.rope_scaling_factor;
     impl->rope_scaling_original_context = inputs.rope_scaling_original_context;
+    impl->draft_confidence_threshold = inputs.draft_confidence_threshold;
     impl->context_cache       = inputs.context_cache;
     impl->kv_storage          = inputs.kv_storage;
     impl->persistent          = persistent_layout(*impl);
@@ -926,6 +936,7 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         .device              = options.device,
         .rope_scaling_factor = options.rope_scaling_factor,
         .rope_scaling_original_context = options.rope_scaling_original_context,
+        .draft_confidence_threshold = options.speculative.draft_confidence_threshold,
         .context_cache       = options.context_cache,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);

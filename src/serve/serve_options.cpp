@@ -82,7 +82,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--rope-scaling-factor F] [--rope-scaling-original-context N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
-           "[--chat-template FILE] [--lm-head-draft] [--no-thinking] [--preserve-thinking] "
+           "[--chat-template FILE] [--lm-head-draft] [--draft-confidence-threshold F] "
+           "[--no-thinking] [--preserve-thinking] "
            "[--tolerant-tool-calls] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -295,6 +296,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.allow_prefix_reuse = false;
         } else if (arg == "--lm-head-draft") {
             options.speculative.proposal_head = ProposalHead::Optimized;
+        } else if (arg == "--draft-confidence-threshold") {
+            options.speculative.draft_confidence_threshold =
+                parse_float_in(require_value("--draft-confidence-threshold"),
+                               "draft-confidence-threshold", 0.0f, 1.0f);
         } else if (arg == "--chat-template") {
             options.chat_template_path = require_value("--chat-template");
         } else if (arg == "--no-thinking") {

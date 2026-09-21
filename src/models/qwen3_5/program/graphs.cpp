@@ -300,7 +300,8 @@ void ProgramImpl::prepare_graphs() {
                                         prefill_chunk,
                                         proposal_head,
                                         rope_scaling_factor,
-                                        rope_scaling_original_context};
+                                        rope_scaling_original_context,
+                                        draft_confidence_threshold};
     };
 
     if (speculative_backend == SpeculativeBackend::None) {

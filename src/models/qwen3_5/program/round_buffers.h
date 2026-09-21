@@ -94,6 +94,10 @@ struct DFlashDecodeEgress {
     std::array<TokenId, kMaximumConcurrency * kDFlashDecodeMaximumWidth> licensed_tokens{};
     std::array<std::int32_t, kMaximumConcurrency> licensed_counts{};
     std::array<std::int32_t, kMaximumConcurrency> accepted_drafts{};
+    // DFlash2 verified extent (host proposal extent clamped by draft-confidence early stop),
+    // copied to the egress by the execution body so host statistics reflect the extent the
+    // target actually verified. Equals the ingress extent when early stop is disabled.
+    std::array<std::int32_t, kMaximumConcurrency> verified_extents{};
 };
 
 struct OrdinaryDecodeStateLayout {
@@ -273,6 +277,7 @@ struct DFlashDecodeState {
     Tensor licensed_tokens;
     Tensor licensed_counts;
     Tensor accepted_drafts;
+    Tensor verified_extents;
     Tensor proposal_ids;
     Tensor proposal_positions;
     Tensor verify_positions;

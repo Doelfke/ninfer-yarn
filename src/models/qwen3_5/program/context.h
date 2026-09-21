@@ -40,6 +40,7 @@ struct ExecutionCore {
     ProposalHead proposal_head;
     float rope_scaling_factor              = 1.0F;
     std::uint32_t rope_scaling_original_context = 262144;
+    float draft_confidence_threshold = 0.0F;
 };
 
 struct PrefillContext {
