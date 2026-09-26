@@ -14,15 +14,8 @@ When using an NVFP4 KV cache, this allows you to reach a 420,000 token context, 
 
 ## Downloading a Model:
 ``` bash
-hf download neroued/Qwen3.8-27B-nvfp4-NInfer \
-qwen3_8_27b_nvfp4.ninfer \
---local-dir models
-```
-
-Or try a much faster model:
-``` bash
-hf CaptainArni/Swift-Qwen3.8-27B-NInfer \
-qwen3_8_27b_nvfp4swift.ninfer \
+hf download CaptainArni/Swift-1.5-Qwen3.8-27B-NInfer \
+qwen3_8_27b_nvfp4swift15.ninfer \
 --local-dir models
 ```
 
@@ -35,7 +28,7 @@ services:
     image: doelfke/ninfer-yarn
     command: [
         "ninfer-serve", 
-        "/models/qwen3_8_27b_nvfp4.ninfer", 
+        "/models/qwen3_8_27b_nvfp4swift15.ninfer", 
         "--host", "0.0.0.0",
         "--max-context", "420000",
         "--kv-dtype", "nvfp4",
