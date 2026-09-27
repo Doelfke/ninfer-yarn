@@ -403,6 +403,9 @@ The oracle determines correctness but does not prescribe production arithmetic. 
 instruction operands, reduction association, staging, workspace representation, and kernel
 decomposition remain implementation choices unless the contract makes an intermediate value
 observable.
+Unless the contract requires an intermediate representation boundary, a fused implementation must
+not retain extra low-precision intermediate rounding to reproduce an unfused route or achieve
+bitwise parity.
 
 ### 6.2 Conformance domain
 
@@ -454,11 +457,12 @@ A long-lived Op benchmark calls the public contract and, when applicable, its pu
 capacity query. It does not include private implementation headers, call private launchers, expose
 candidate or kernel forcing, or duplicate candidate legality and production dispatch tables.
 
-The sole standing exception is `ninfer_gated_delta_net_bench --chunked-only --breakdown`: the
-complete chunked pipeline is still measured through the public Op, while the benchmark may call
-exactly its three intrinsic `prepare_wy_wu`, `state_passing`, and `output` stage launchers for
-algorithm-stage attribution. It may not call the private complete-pipeline launcher or any other
-private launcher.
+The Gated DeltaNet benchmark is an explicit exception: `--running` measures the public Op and
+uses its workspace capacity query, while `--breakdown` may call the selected production
+`prepare` and `recurrence` stage launchers with their private workspace layout. `--force-chunked`
+and `--recurrent-only` may force those production routes at matching prefill extents to measure
+their crossover; `--chunked-only` measures the same chunked route with pre-normalized BF16 Q/K.
+These controls qualify the production prefill decomposition and do not change decode or ReplaySSM.
 
 Candidate comparison is task-local development work. A temporary sweep may call private launchers
 and encode the exact overlapping candidate domains needed for a decision. Measure candidates under
@@ -513,7 +517,11 @@ plausible candidates. Instantiate only the small overlapping candidate set neede
 decision; do not create a Cartesian product of speculative knobs. Add another family or parameter
 only when evidence shows that the existing candidates cannot cover a relevant part of the
 workload. Once dispatch is selected, retain the winning instances and parameters and remove losing
-candidates and unused knobs.
+candidate instances and temporary tuning entry points. Reusable kernel families and schedule
+parameters with a clear purpose and development validation may remain as tuning assets even when
+current production dispatch does not select them. Qualify new configuration/epilogue combinations
+during development; permanent tests protect public behavior and production routes, not an unused
+configuration-by-epilogue matrix.
 
 Derive latency-sensitive extents and bulk anchors from the active workload and the Op's actual
 input semantics. Review pointwise behavior and material route seams; select a small set of useful
