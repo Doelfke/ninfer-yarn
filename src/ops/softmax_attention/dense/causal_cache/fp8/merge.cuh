@@ -10,7 +10,7 @@ template <class Geometry>
 __device__ __forceinline__ float
 fp8_kv_merge_statistics(const float* partial_m, const float* partial_l, int q_head, int token,
                         int tokens, int splits, float* weights, float* warp_sums, float* scalars) {
-    static_assert(Fp8KvSplitPolicy<Geometry::QHeads>::kMaxSplits <= 256);
+    static_assert(Fp8KvPartition::kMaxSplits <= 256);
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const auto index   = fp8_kv_stat_index<Geometry>(q_head, token, tid, tokens);
     const float m      = tid < splits ? partial_m[index] : -CUDART_INF_F;
@@ -39,7 +39,7 @@ __launch_bounds__(256) __global__
     void fp8_kv_merge_kernel(const float* partial_acc, const float* partial_m,
                              const float* partial_l, const std::int32_t* positions,
                              const std::int32_t* valid_columns, std::int32_t tokens,
-                             std::int32_t batch_size, std::int32_t split_count,
+                             std::int32_t batch_size, Fp8KvPartition partition,
                              __nv_bfloat16* out) {
     constexpr int DChunk  = Schedule::kDChunk;
     const int q_head      = static_cast<int>(blockIdx.x);
@@ -51,7 +51,8 @@ __launch_bounds__(256) __global__
         batch = flat_column / tokens;
         token = flat_column - batch * tokens;
     }
-    const int tid = static_cast<int>(threadIdx.x);
+    const int tid         = static_cast<int>(threadIdx.x);
+    const int split_count = partition.capacity;
     if (q_head >= Geometry::QHeads || token >= tokens) return;
     if constexpr (MultiBatch) {
         if (batch >= batch_size) return;
@@ -77,8 +78,7 @@ __launch_bounds__(256) __global__
         partial_m += static_cast<std::int64_t>(batch) * Geometry::QHeads * tokens * split_count;
         partial_l += static_cast<std::int64_t>(batch) * Geometry::QHeads * tokens * split_count;
     }
-    const int active_splits =
-        Fp8KvSplitPolicy<Geometry::QHeads>::active(window, split_count, tokens);
+    const int active_splits = partition.active(window);
     __shared__ float weights[256], warp_sums[8], scalars[2];
     const float head_l = fp8_kv_merge_statistics<Geometry>(
         partial_m, partial_l, q_head, token, tokens, active_splits, weights, warp_sums, scalars);

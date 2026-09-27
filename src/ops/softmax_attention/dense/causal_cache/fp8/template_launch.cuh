@@ -19,50 +19,45 @@ void validate_fp8_kv_operands(const Fp8KvOperands& p, Fp8KvCacheView<Writable> c
 }
 
 template <class G, class S, bool MultiBatch, bool Masked, bool Writable, class Input,
-          bool ParallelQueries = false, bool Partial = true>
+          bool ParallelQueries = false>
 void launch_fp8_kv_grouped_mma(const Fp8KvOperands& p, Fp8KvCacheView<Writable> cache, Input input,
-                               int splits, Fp8KvPartialView partial, cudaStream_t stream) {
+                               Fp8KvPartition partition, Fp8KvPartialView partial,
+                               cudaStream_t stream) {
     static_assert(Writable == Input::writes_cache);
     validate_fp8_kv_operands<G>(p, cache);
     if ((!ParallelQueries && p.width != S::kTokenTile) || MultiBatch != (p.batch > 1) ||
-        Masked != (cache.valid_columns != nullptr) || splits < 1 ||
-        splits > Fp8KvSplitPolicy<G::QHeads>::kMaxSplits ||
-        (Partial && (!partial.acc || !partial.maximum || !partial.sum)) ||
-        (!Partial && splits != 1))
+        Masked != (cache.valid_columns != nullptr) || partition.capacity < 1 ||
+        partition.target > Fp8KvPartition::kMaxSplits || partition.target < 1 ||
+        partition.key_shift < 6 || partition.key_shift > 12 ||
+        partition.capacity != partition.active(p.visible_capacity) || !partial.acc ||
+        !partial.maximum || !partial.sum)
         throw std::invalid_argument("FP8 grouped attention: invalid schedule/partials");
-    if constexpr (!ParallelQueries) {
-        // Fused append stages each split's page IDs. Include key-tile and page alignment;
-        // parallel read-only tiles walk the table directly and have no such span limit.
-        const int span = div_up(p.visible_capacity, splits) + 2 * S::kKeyRows;
-        if (span > S::kPageIds * kPagedKVPageSize)
-            throw std::invalid_argument("FP8 grouped split exceeds the staged page capacity");
-    }
     if constexpr (Input::writes_cache)
         if (!input.k || !input.v) throw std::invalid_argument("FP8 append requires K/V");
     constexpr auto kernel =
-        fp8_kv_grouped_mma_kernel<G, S, MultiBatch, Masked, Input, ParallelQueries, Partial>;
+        fp8_kv_grouped_mma_kernel<G, S, MultiBatch, Masked, Input, ParallelQueries>;
     constexpr int bytes = S::kDynamicArena ? S::kArenaBytes : 0;
     if constexpr (S::kDynamicArena) {
         static const auto status =
             cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
         CUDA_CHECK(status);
     }
-    const dim3 grid(G::KVHeads * (ParallelQueries ? div_up(p.width, S::kTokenTile) : 1), splits,
-                    p.batch);
+    const dim3 grid(G::KVHeads * (ParallelQueries ? div_up(p.width, S::kTokenTile) : 1),
+                    partition.capacity, p.batch);
     kernel<<<grid, S::kThreads, bytes, stream>>>(
         p.q, input, p.positions, cache.keys, cache.values, cache.key_scales, cache.value_scales,
         cache.tables, cache.valid_columns, cache.table_rows, cache.table_stride, p.width,
-        p.visible_capacity, p.scale, partial.acc, partial.maximum, partial.sum, p.out);
+        p.visible_capacity, partition, p.scale, partial.acc, partial.maximum, partial.sum);
     CUDA_CHECK(cudaGetLastError());
 }
 
 template <class G, class S, bool MultiBatch, bool Masked, bool Writable>
-void launch_fp8_kv_merge(const Fp8KvOperands& p, Fp8KvCacheView<Writable> cache, int splits,
-                         Fp8KvPartialView partial, cudaStream_t stream) {
+void launch_fp8_kv_merge(const Fp8KvOperands& p, Fp8KvCacheView<Writable> cache,
+                         Fp8KvPartition partition, Fp8KvPartialView partial, cudaStream_t stream) {
     const dim3 grid(G::QHeads, div_up(G::kHeadDim, S::kDChunk), p.width * p.batch);
     fp8_kv_merge_kernel<G, S, MultiBatch, Masked>
         <<<grid, S::kThreads, 0, stream>>>(partial.acc, partial.maximum, partial.sum, p.positions,
-                                           cache.valid_columns, p.width, p.batch, splits, p.out);
+                                           cache.valid_columns, p.width, p.batch, partition, p.out);
     CUDA_CHECK(cudaGetLastError());
 }
 

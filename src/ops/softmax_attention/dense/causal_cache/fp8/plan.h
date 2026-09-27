@@ -1,17 +1,18 @@
 #pragma once
 
 #include "ninfer/ops/softmax_attention.h"
+#include "ops/softmax_attention/dense/causal_cache/fp8/split_policy.h"
 
 namespace ninfer::ops::detail {
 
 enum class Fp8KvFamily { Grouped, ParallelGrouped, Tiled };
 
 struct Fp8KvCausalPlan {
+    static constexpr int kTokenTile = 8;
     Fp8KvFamily family;
-    int query_heads, width, batch, token_tile;
+    int query_heads, width, batch;
     CausalAttentionExecutionEnvelope envelope;
-
-    int split_capacity() const;
+    Fp8KvPartition partition;
 };
 
 Fp8KvCausalPlan make_fp8_kv_causal_plan(int heads, int width, int batch,

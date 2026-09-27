@@ -15,7 +15,6 @@ struct Fp8KvGroupedMmaSchedule {
     static constexpr int kMinBlocks     = MinBlocks;
     static constexpr bool kDynamicArena = DynamicArena;
     static constexpr int kArenaBytes    = 4 * KeyTile * 256;
-    static constexpr int kPageIds       = 64;
 };
 
 // Two QK warps cover disjoint key halves; four PV warps split the output D axis.

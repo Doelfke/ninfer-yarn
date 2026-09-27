@@ -1817,7 +1817,7 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
             cuda_synchronize();
             const auto actual = copy_from_guarded<std::uint16_t>(dout, q_bits.size());
             graph_failures +=
-                verify_attention("BF16 attention envelope update",
+                verify_attention(std::string(cache_name(storage)) + " attention envelope update",
                                  bf16_bits_to_double(select_query_columns(
                                      actual, kHeadDim * geometry.q_heads, oracle_queries)),
                                  reference, attention_criterion(storage));
@@ -1989,7 +1989,7 @@ int run_batch_case(const Geometry& geometry, KvCacheStorage storage,
             maximum_visible,
             test_case.contexts[b] + (test_case.graph_replay ? width : test_case.valid_columns[b]));
     const ops::CausalAttentionExecutionEnvelope envelope{
-        static_cast<unsigned>(maximum_visible),
+        test_case.graph_replay ? 1U : static_cast<unsigned>(maximum_visible),
         static_cast<unsigned>(std::max(maximum_visible, envelope_max))};
     const std::size_t q_column_elements  = std::size_t(kHeadDim) * geometry.q_heads,
                       kv_column_elements = std::size_t(kHeadDim) * geometry.kv_heads;
@@ -2334,20 +2334,20 @@ int run_geometry(const Geometry& geometry) {
     return failures;
 }
 
-// A grouped BF16 call keeps one update-compatible two-stage execution across
-// short and long envelopes. Verify each replay against the independent oracle.
-int run_bf16_graph_envelope_cases() {
+// A fixed-width BF16/FP8 call keeps update-compatible execution across short and
+// long envelopes. Verify each replay against the independent oracle.
+int run_graph_envelope_cases(KvCacheStorage storage) {
     int failures = 0;
     constexpr std::array<std::uint32_t, 5> short_limits{64, 128, 2048, 64, 2048};
     constexpr std::array<std::uint32_t, 4> long_limits{32769, 65536, 131072, 32769};
     for (const auto& geometry : kGeometries) {
-        for (int width : {1, 4, 16})
-            failures += run_a1_case(geometry, KvCacheStorage::BFloat16, {width, 17, 2048, 965u},
+        for (int width : {1, 4, 8, 16})
+            failures += run_a1_case(geometry, storage, {width, 17, 2048, 965u},
                                     MappingPattern::Fragmented, {}, short_limits);
-        failures += run_a1_case(geometry, KvCacheStorage::BFloat16, {1, 32768, 131072, 966u},
+        failures += run_a1_case(geometry, storage, {1, 32768, 131072, 966u},
                                 MappingPattern::Fragmented, {}, long_limits);
         failures += run_batch_case(
-            geometry, KvCacheStorage::BFloat16,
+            geometry, storage,
             {4, {32764, 8190, 127}, {4, 2, 0}, {2, 0, 1}, MappingPattern::Fragmented, 967u, true},
             65536);
     }
@@ -2357,6 +2357,15 @@ int run_bf16_graph_envelope_cases() {
 int run_fp8_cases() {
     int failures = 0;
     for (const Geometry& geometry : kGeometries) {
+        // Grouped/parallel and decode/prefill width boundaries remain independent
+        // of context length, for both public entries.
+        constexpr int grouped_limit = 8;
+        for (int width : {grouped_limit - 1, grouped_limit, grouped_limit + 1, 15, 16, 17}) {
+            failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {width, 17, 64, 600u},
+                                    MappingPattern::Fragmented);
+            failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256, {width, 17, 64, 600u},
+                                    MappingPattern::Fragmented);
+        }
         failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {65, 63, 192, 601u},
                                 MappingPattern::Fragmented);
         failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256, {65, 63, 192, 602u},
@@ -2397,6 +2406,16 @@ int run_fp8_cases() {
     failures += run_batch_case(
         kGeometries[1], KvCacheStorage::Fp8E4M3Row256,
         {7, {17, 4097, 64}, {0, 5, 7}, {2, 0, 1}, MappingPattern::Fragmented, 616u, true});
+    // A long batch gives each grouped CTA more pages than the old staged table
+    // could hold. Exercise live lengths, empty rows and remapping in one capture.
+    failures += run_batch_case(kGeometries[0], KvCacheStorage::Fp8E4M3Row256,
+                               {8,
+                                {32768, 8192, 1024, 127, 61, 1, 0, 2048},
+                                {1, 2, 0, 8, 4, 1, 0, 3},
+                                {7, 0, 5, 2, 6, 1, 4, 3},
+                                MappingPattern::Fragmented,
+                                617u,
+                                true});
     return failures;
 }
 
@@ -2560,7 +2579,8 @@ int run_softmax_attention_causal_cache_tests() {
     failures += report_quantization_quality(KvCacheStorage::Fp8KeyNvfp4Value, 819u);
     for (const Geometry& geometry : kGeometries) { failures += run_geometry(geometry); }
     failures += run_fp8_cases();
-    failures += run_bf16_graph_envelope_cases();
+    failures += run_graph_envelope_cases(KvCacheStorage::BFloat16);
+    failures += run_graph_envelope_cases(KvCacheStorage::Fp8E4M3Row256);
     failures += run_batch_cases();
     const std::array<int, 7> prefill_queries{0, 63, 64, 127, 128, 511, 1023};
     for (const auto& geometry : kGeometries)

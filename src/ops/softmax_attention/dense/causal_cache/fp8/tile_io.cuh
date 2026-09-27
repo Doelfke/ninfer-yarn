@@ -34,12 +34,6 @@ __device__ __forceinline__ std::int64_t fp8_kv_stat_index(int q_head, int token,
                (static_cast<std::int64_t>(token) + static_cast<std::int64_t>(tokens) * split);
 }
 
-template <typename Geometry>
-__device__ __forceinline__ bool fp8_kv_valid_head(int kv_head, int q_head) {
-    return kv_head >= 0 && kv_head < Geometry::KVHeads && q_head >= kv_head * Geometry::GroupSize &&
-           q_head < (kv_head + 1) * Geometry::GroupSize && q_head < Geometry::QHeads;
-}
-
 __device__ __forceinline__ int fp8_kv_swizzle(int row, int col) {
     return (((col >> 3) ^ (row & 7)) << 3) | (col & 7);
 }
