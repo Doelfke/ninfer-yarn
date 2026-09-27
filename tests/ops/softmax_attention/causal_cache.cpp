@@ -2334,7 +2334,7 @@ int run_geometry(const Geometry& geometry) {
     return failures;
 }
 
-// A fixed-width BF16/FP8/INT8 call keeps update-compatible execution across short and
+// A fixed-width call keeps update-compatible execution across short and
 // long envelopes. Verify each replay against the independent oracle.
 int run_graph_envelope_cases(KvCacheStorage storage) {
     int failures = 0;
@@ -2588,6 +2588,8 @@ int run_softmax_attention_causal_cache_tests() {
     failures += run_graph_envelope_cases(KvCacheStorage::Fp8E4M3Row256);
     failures += run_graph_envelope_cases(KvCacheStorage::Int8Group64);
     failures += run_graph_envelope_cases(KvCacheStorage::Nvfp4Group16);
+    failures += run_graph_envelope_cases(KvCacheStorage::Fp8KeyNvfp4Value);
+    failures += run_quantized_causal_cases(KvCacheStorage::Fp8KeyNvfp4Value);
     failures += run_quantized_causal_cases(KvCacheStorage::Nvfp4Group16);
     failures += run_quantized_causal_cases(KvCacheStorage::Int8Group64);
     failures += run_batch_cases();

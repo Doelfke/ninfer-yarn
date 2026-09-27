@@ -3,7 +3,6 @@
 
 #include "core/layout.h"
 #include "core/paged_kv_storage.h"
-#include "ops/softmax_attention/dense/causal_cache/launch.h"
 #include "ops/softmax_attention/dense/causal_cache/bf16/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/bf16/launch.h"
 #include "ops/softmax_attention/dense/causal_cache/fp8/plan.h"
@@ -12,6 +11,8 @@
 #include "ops/softmax_attention/dense/causal_cache/int8/launch.h"
 #include "ops/softmax_attention/dense/causal_cache/nvfp4/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/nvfp4/launch.h"
+#include "ops/softmax_attention/dense/causal_cache/k8v4/plan.h"
+#include "ops/softmax_attention/dense/causal_cache/k8v4/launch.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,17 +24,10 @@
 namespace ninfer::ops {
 namespace {
 
-constexpr std::int32_t kHeadDim                      = 256;
-constexpr float kExpectedScale                       = 0.0625f;
-constexpr std::int32_t kMaximumVerifyTokens          = 16;
-constexpr std::int32_t kMaximumBatchSize             = 8;
-constexpr std::uint32_t kTwoChunkPromptVisibleKeys   = 512;
-constexpr std::uint32_t kThreeChunkPromptVisibleKeys = 1024;
-
-std::int32_t causal_attention_chunk_tokens(std::int32_t q_heads) {
-    if (q_heads == 16) return 6;
-    return 8;
-}
+constexpr std::int32_t kHeadDim             = 256;
+constexpr float kExpectedScale              = 0.0625f;
+constexpr std::int32_t kMaximumVerifyTokens = 16;
+constexpr std::int32_t kMaximumBatchSize    = 8;
 
 void require_causal_geometry(AttentionHeadGeometry geometry, const char* op) {
     if (!valid_attention_head_geometry(geometry) || geometry.head_dim != kHeadDim ||
@@ -265,113 +259,7 @@ void validate_batched_attention_tensors(const Tensor& q, const Tensor& positions
     }
 }
 
-struct SmallTWorkspace {
-    Tensor acc;
-    Tensor m;
-    Tensor l;
-};
-
-template <class Allocator>
-SmallTWorkspace allocate_small_t_workspace(Allocator& workspace, std::int32_t q_heads,
-                                           std::int32_t tokens, std::int32_t splits,
-                                           std::int32_t batch_size) {
-    return {
-        workspace.alloc(DType::FP32, {kHeadDim, q_heads, tokens, splits * batch_size}),
-        workspace.alloc(DType::FP32, {q_heads, tokens, splits * batch_size}),
-        workspace.alloc(DType::FP32, {q_heads, tokens, splits * batch_size}),
-    };
-}
-
-template <typename Launch>
-void for_each_small_t_chunk(const Tensor& q, const Tensor& positions, WorkspaceArena& workspace,
-                            KvCacheStorage cache_storage, CausalAttentionExecutionEnvelope envelope,
-                            Tensor& out, Launch&& launch) {
-    for (std::int32_t begin = 0; begin < q.ne[2]; begin += causal_attention_chunk_tokens(q.ne[1])) {
-        const std::int32_t count =
-            std::min(causal_attention_chunk_tokens(q.ne[1]), q.ne[2] - begin);
-        auto chunk_scope = workspace.scope();
-        const std::int32_t splits =
-            detail::causal_attention_split_capacity(q.ne[1], count, cache_storage, envelope);
-        SmallTWorkspace partial = allocate_small_t_workspace(workspace, q.ne[1], count, splits, 1);
-        Tensor q_chunk          = q.slice(2, begin, count);
-        Tensor position_chunk   = positions.slice(0, begin, count);
-        Tensor out_chunk        = out.slice(2, begin, count);
-        launch(begin, count, q_chunk, position_chunk, partial, out_chunk);
-    }
-}
-
-void launch_chunked_small_t(const Tensor& q, const Tensor& k, const Tensor& v,
-                            const Tensor& positions, const Tensor& valid_columns,
-                            const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
-                            CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
-                            Tensor& out, cudaStream_t stream) {
-    for (std::int32_t begin = 0; begin < q.ne[2]; begin += causal_attention_chunk_tokens(q.ne[1])) {
-        const std::int32_t count =
-            std::min(causal_attention_chunk_tokens(q.ne[1]), q.ne[2] - begin);
-        auto chunk_scope          = workspace.scope();
-        const std::int32_t splits = detail::causal_attention_split_capacity(
-            q.ne[1], count, cache.storage, envelope, q.ne[3]);
-        SmallTWorkspace partial =
-            allocate_small_t_workspace(workspace, q.ne[1], count, splits, q.ne[3]);
-        detail::causal_attention_small_t_launch(q, k, v, positions, valid_columns, table_rows,
-                                                scale, cache, envelope, begin, count, partial.acc,
-                                                partial.m, partial.l, out, stream);
-    }
-}
-
-void launch_cached_chunked_small_t(const Tensor& q, const Tensor& positions, float scale,
-                                   const PagedKVLayerView& cache,
-                                   CausalAttentionExecutionEnvelope envelope,
-                                   WorkspaceArena& workspace, Tensor& out, cudaStream_t stream) {
-    for_each_small_t_chunk(
-        q, positions, workspace, cache.storage, envelope, out,
-        [&](std::int32_t, std::int32_t, const Tensor& q_chunk, const Tensor& position_chunk,
-            SmallTWorkspace& partial, Tensor& out_chunk) {
-            detail::causal_attention_cached_small_t_launch(q_chunk, position_chunk, scale, cache,
-                                                           envelope, partial.acc, partial.m,
-                                                           partial.l, out_chunk, stream);
-        });
-}
-
 } // namespace
-
-namespace detail {
-
-CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::int32_t width,
-                                                    std::int32_t batch_size, KvCacheStorage storage,
-                                                    CausalAttentionExecutionEnvelope envelope) {
-    if (storage != KvCacheStorage::Fp8KeyNvfp4Value)
-        throw std::logic_error("this attention storage owns its plan");
-    if (q_heads == 24 && width <= kMaximumVerifyTokens) {
-        if (batch_size == 1) {
-            const std::uint32_t prompt_limit = width <= 4 ? 0 : width <= 8 ? 128 : 320;
-            if (envelope.max_visible_keys <= prompt_limit) return CausalAttentionRoute::Prompt;
-        }
-        return width <= 8 ? CausalAttentionRoute::SmallT : CausalAttentionRoute::ChunkedSmallT;
-    }
-    if (width <= 6) return CausalAttentionRoute::SmallT;
-    if (batch_size > 1) return CausalAttentionRoute::ChunkedSmallT;
-    const std::uint32_t prompt_visible_keys =
-        width <= 12 ? kTwoChunkPromptVisibleKeys : kThreeChunkPromptVisibleKeys;
-    if (q_heads == 16 && width <= kMaximumVerifyTokens &&
-        envelope.max_visible_keys > prompt_visible_keys)
-        return CausalAttentionRoute::ChunkedSmallT;
-    return CausalAttentionRoute::Prompt;
-}
-
-const char* causal_attention_route_name(CausalAttentionRoute route) {
-    switch (route) {
-    case CausalAttentionRoute::SmallT:
-        return "small_t";
-    case CausalAttentionRoute::ChunkedSmallT:
-        return "chunked_small_t";
-    case CausalAttentionRoute::Prompt:
-        return "prompt";
-    }
-    return "unknown";
-}
-
-} // namespace detail
 
 std::size_t causal_softmax_attention_workspace_capacity_bytes(
     AttentionHeadGeometry geometry, KvCacheStorage cache_storage,
@@ -401,38 +289,10 @@ std::size_t causal_softmax_attention_workspace_capacity_bytes(
         return detail::int8_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
 
     if (cache_storage == KvCacheStorage::Nvfp4Group16)
-        return detail::nvfp4_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
+        return detail::nvfp4_kv_workspace_bytes(q_heads, batch_size, min_width, max_width,
+                                                envelope);
 
-    const auto chunk_capacity = [&](std::int32_t width) {
-        const std::int32_t splits = detail::causal_attention_split_capacity(
-            q_heads, width, cache_storage, envelope, batch_size);
-        WorkspaceLayoutBuilder layout;
-        (void)allocate_small_t_workspace(layout, q_heads, width, splits, batch_size);
-        return layout.peak_bytes(1);
-    };
-    const auto exact_capacity = [&](std::int32_t width) {
-        const detail::CausalAttentionRoute route = detail::causal_attention_resolve_route(
-            q_heads, width, batch_size, cache_storage, envelope);
-        if (route == detail::CausalAttentionRoute::Prompt) { return std::size_t{0}; }
-        if (route == detail::CausalAttentionRoute::SmallT) { return chunk_capacity(width); }
-        std::size_t maximum = 0;
-        for (std::int32_t begin = 0; begin < width;
-             begin += causal_attention_chunk_tokens(q_heads)) {
-            maximum = std::max(
-                maximum,
-                chunk_capacity(std::min(causal_attention_chunk_tokens(q_heads), width - begin)));
-        }
-        return maximum;
-    };
-
-    std::size_t maximum = 0;
-    if (min_width <= kMaximumVerifyTokens) {
-        const std::int32_t last = std::min(max_width, kMaximumVerifyTokens);
-        for (std::int32_t width = min_width; width <= last; ++width) {
-            maximum = std::max(maximum, exact_capacity(width));
-        }
-    }
-    return maximum;
+    return detail::k8v4_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
 }
 
 void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
@@ -475,30 +335,12 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
 
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {
         detail::nvfp4_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale,
-                                         cache, envelope, workspace, out, stream);
+                                          cache, envelope, workspace, out, stream);
         return;
     }
 
-    auto scope = workspace.scope();
-    const detail::CausalAttentionRoute route =
-        detail::causal_attention_resolve_route(q.ne[1], width, batch, cache.storage, envelope);
-    if (route == detail::CausalAttentionRoute::ChunkedSmallT) {
-        launch_chunked_small_t(q, k, v, positions, valid_columns, kv_table_rows, scale, cache,
-                               envelope, workspace, out, stream);
-        return;
-    }
-    if (route == detail::CausalAttentionRoute::SmallT) {
-        const std::int32_t splits =
-            detail::causal_attention_split_capacity(q.ne[1], width, cache.storage, envelope, batch);
-        SmallTWorkspace partial =
-            allocate_small_t_workspace(workspace, q.ne[1], width, splits, batch);
-        detail::causal_attention_small_t_launch(q, k, v, positions, valid_columns, kv_table_rows,
-                                                scale, cache, envelope, 0, width, partial.acc,
-                                                partial.m, partial.l, out, stream);
-        return;
-    }
-    detail::causal_attention_prompt_launch(q, k, v, positions, valid_columns, kv_table_rows, scale,
-                                           cache, out, stream);
+    detail::k8v4_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale, cache,
+                                     envelope, workspace, out, stream);
 }
 
 void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
@@ -529,27 +371,11 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
 
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {
         detail::nvfp4_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
-                                         stream);
+                                          stream);
         return;
     }
 
-    auto scope = workspace.scope();
-    const detail::CausalAttentionRoute route =
-        detail::causal_attention_resolve_route(q.ne[1], q.ne[2], 1, cache.storage, envelope);
-    if (route == detail::CausalAttentionRoute::ChunkedSmallT) {
-        launch_cached_chunked_small_t(q, positions, scale, cache, envelope, workspace, out, stream);
-        return;
-    }
-    if (route == detail::CausalAttentionRoute::SmallT) {
-        const std::int32_t splits =
-            detail::causal_attention_split_capacity(q.ne[1], q.ne[2], cache.storage, envelope);
-        SmallTWorkspace partial =
-            allocate_small_t_workspace(workspace, q.ne[1], q.ne[2], splits, 1);
-        detail::causal_attention_cached_small_t_launch(
-            q, positions, scale, cache, envelope, partial.acc, partial.m, partial.l, out, stream);
-        return;
-    }
-    detail::causal_attention_prompt_attention_launch(q, positions, scale, cache, out, stream);
+    detail::k8v4_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out, stream);
 }
 
 } // namespace ninfer::ops
