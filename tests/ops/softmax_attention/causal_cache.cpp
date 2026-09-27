@@ -2334,7 +2334,7 @@ int run_geometry(const Geometry& geometry) {
     return failures;
 }
 
-// A fixed-width BF16/FP8 call keeps update-compatible execution across short and
+// A fixed-width BF16/FP8/INT8 call keeps update-compatible execution across short and
 // long envelopes. Verify each replay against the independent oracle.
 int run_graph_envelope_cases(KvCacheStorage storage) {
     int failures = 0;
@@ -2354,61 +2354,61 @@ int run_graph_envelope_cases(KvCacheStorage storage) {
     return failures;
 }
 
-int run_fp8_cases() {
+int run_quantized_causal_cases(KvCacheStorage storage) {
     int failures = 0;
     for (const Geometry& geometry : kGeometries) {
         // Grouped/parallel and decode/prefill width boundaries remain independent
         // of context length, for both public entries.
         constexpr int grouped_limit = 8;
         for (int width : {grouped_limit - 1, grouped_limit, grouped_limit + 1, 15, 16, 17}) {
-            failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {width, 17, 64, 600u},
+            failures += run_a1_case(geometry, storage, {width, 17, 64, 600u},
                                     MappingPattern::Fragmented);
-            failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256, {width, 17, 64, 600u},
+            failures += run_a3_case(geometry, storage, {width, 17, 64, 600u},
                                     MappingPattern::Fragmented);
         }
-        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {65, 63, 192, 601u},
+        failures += run_a1_case(geometry, storage, {65, 63, 192, 601u},
                                 MappingPattern::Fragmented);
-        failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256, {65, 63, 192, 602u},
+        failures += run_a3_case(geometry, storage, {65, 63, 192, 602u},
                                 MappingPattern::Fragmented);
-        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {1, 128, 192, 603u},
+        failures += run_a1_case(geometry, storage, {1, 128, 192, 603u},
                                 MappingPattern::Fragmented);
-        failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256, {1, 128, 192, 604u},
+        failures += run_a3_case(geometry, storage, {1, 128, 192, 604u},
                                 MappingPattern::Offset);
-        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {6, 61, 192, 605u},
+        failures += run_a1_case(geometry, storage, {6, 61, 192, 605u},
                                 MappingPattern::Fragmented);
     }
-    failures += run_a3_case(kGeometries[0], KvCacheStorage::Fp8E4M3Row256, {3, 63, 192, 606u},
+    failures += run_a3_case(kGeometries[0], storage, {3, 63, 192, 606u},
                             MappingPattern::Identity);
-    failures += run_a1_case(kGeometries[0], KvCacheStorage::Fp8E4M3Row256, {1, 16384, 16385, 607u},
+    failures += run_a1_case(kGeometries[0], storage, {1, 16384, 16385, 607u},
                             MappingPattern::Fragmented);
     // Partial query tiles, device metadata updates and large production prefill rows.
     for (const auto& geometry : kGeometries) {
-        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256,
+        failures += run_a1_case(geometry, storage,
                                 {16, 1024, 4096, 608u, false, true}, MappingPattern::Fragmented);
-        failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256,
+        failures += run_a3_case(geometry, storage,
                                 {13, 513, 8192, 609u, false, true}, MappingPattern::Fragmented);
         failures += run_batch_case(
-            geometry, KvCacheStorage::Fp8E4M3Row256,
+            geometry, storage,
             {16, {17, 1025, 64}, {0, 7, 16}, {2, 0, 1}, MappingPattern::Fragmented, 610u, true});
         const std::array<int, 4> queries{0, 63, 64, 1023};
-        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {1024, 8192, 9216, 611u},
+        failures += run_a1_case(geometry, storage, {1024, 8192, 9216, 611u},
                                 MappingPattern::Fragmented, queries);
-        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256,
+        failures += run_a1_case(geometry, storage,
                                 {1, 63, 64, 612u, false, true}, MappingPattern::Fragmented);
-        failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256,
+        failures += run_a3_case(geometry, storage,
                                 {1, 0, 1, 613u, false, true}, MappingPattern::Fragmented);
         failures += run_batch_case(
-            geometry, KvCacheStorage::Fp8E4M3Row256,
+            geometry, storage,
             {1, {0, 31, 63}, {0, 1, 1}, {2, 0, 1}, MappingPattern::Fragmented, 614u, true});
     }
-    failures += run_a3_case(kGeometries[1], KvCacheStorage::Fp8E4M3Row256,
+    failures += run_a3_case(kGeometries[1], storage,
                             {7, 511, 8192, 615u, false, true}, MappingPattern::Fragmented);
     failures += run_batch_case(
-        kGeometries[1], KvCacheStorage::Fp8E4M3Row256,
+        kGeometries[1], storage,
         {7, {17, 4097, 64}, {0, 5, 7}, {2, 0, 1}, MappingPattern::Fragmented, 616u, true});
     // A long batch gives each grouped CTA more pages than the old staged table
     // could hold. Exercise live lengths, empty rows and remapping in one capture.
-    failures += run_batch_case(kGeometries[0], KvCacheStorage::Fp8E4M3Row256,
+    failures += run_batch_case(kGeometries[0], storage,
                                {8,
                                 {32768, 8192, 1024, 127, 61, 1, 0, 2048},
                                 {1, 2, 0, 8, 4, 1, 0, 3},
@@ -2416,6 +2416,11 @@ int run_fp8_cases() {
                                 MappingPattern::Fragmented,
                                 617u,
                                 true});
+    // Full batches use the unmasked standalone append before parallel query tiles.
+    for (const auto& geometry : kGeometries)
+        failures += run_batch_case(geometry, storage,
+            {16, {128, 64, 32, 8, 2, 17, 63, 127}, {16,16,16,16,16,16,16,16},
+             {7,0,5,2,6,1,4,3}, MappingPattern::Fragmented, 618u});
     return failures;
 }
 
@@ -2578,9 +2583,11 @@ int run_softmax_attention_causal_cache_tests() {
     failures += run_quantized_batch_cases(KvCacheStorage::Fp8KeyNvfp4Value, 815u);
     failures += report_quantization_quality(KvCacheStorage::Fp8KeyNvfp4Value, 819u);
     for (const Geometry& geometry : kGeometries) { failures += run_geometry(geometry); }
-    failures += run_fp8_cases();
+    failures += run_quantized_causal_cases(KvCacheStorage::Fp8E4M3Row256);
     failures += run_graph_envelope_cases(KvCacheStorage::BFloat16);
     failures += run_graph_envelope_cases(KvCacheStorage::Fp8E4M3Row256);
+    failures += run_graph_envelope_cases(KvCacheStorage::Int8Group64);
+    failures += run_quantized_causal_cases(KvCacheStorage::Int8Group64);
     failures += run_batch_cases();
     const std::array<int, 7> prefill_queries{0, 63, 64, 127, 128, 511, 1023};
     for (const auto& geometry : kGeometries)

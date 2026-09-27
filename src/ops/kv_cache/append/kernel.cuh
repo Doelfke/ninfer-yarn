@@ -191,7 +191,7 @@ __launch_bounds__(256) __global__
                                            physical_page, position & kPagedKVPageMask, lane);
 }
 
-template <typename Geometry, typename Metadata>
+template <typename Geometry, typename Metadata, bool MultiBatch = false>
 __launch_bounds__(256) __global__
     void kv_cache_append_full_i8_kernel(const __nv_bfloat16* __restrict__ k,
                                         const __nv_bfloat16* __restrict__ v,
@@ -200,6 +200,15 @@ __launch_bounds__(256) __global__
                                         std::int8_t* __restrict__ cache_v,
                                         __half* __restrict__ scale_k, __half* __restrict__ scale_v,
                                         std::int32_t width) {
+    if constexpr (MultiBatch) {
+        const int batch = blockIdx.z;
+        metadata.table_rows += batch;
+        if (metadata.valid_columns) metadata.valid_columns += batch;
+        const auto offset = static_cast<std::int64_t>(batch) * width * 256 * Geometry::KVHeads;
+        k += offset;
+        v += offset;
+        positions += batch * width;
+    }
     constexpr int Warps         = 8;
     constexpr unsigned FullMask = 0xffffffffu;
     const int tokens            = metadata.valid_tokens(width);

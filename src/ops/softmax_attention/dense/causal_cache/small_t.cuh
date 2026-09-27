@@ -1,7 +1,7 @@
 #pragma once
 
 // Quantized-cache split-KV scaffolding: layout helpers, split policies and the
-// INT8 reducer. BF16 templates own their geometry, policy and merge in bf16/.
+// statistics merge used by the remaining legacy formats.
 
 #include "ops/common/math.cuh"
 #include "ops/common/mma.cuh"
@@ -42,13 +42,6 @@ __device__ __forceinline__ std::int64_t causal_q_index(int q_head, int d, int to
                                                static_cast<std::int64_t>(Geometry::QHeads) * token);
 }
 
-template <typename Geometry>
-__device__ __forceinline__ std::int64_t kv_cache_int8_new_index(int kv_head, int d, int token = 0) {
-    return static_cast<std::int64_t>(d) +
-           static_cast<std::int64_t>(kCausalHeadDim) *
-               (static_cast<std::int64_t>(kv_head) +
-                static_cast<std::int64_t>(Geometry::KVHeads) * token);
-}
 
 template <typename Geometry>
 __device__ __forceinline__ std::int64_t causal_partial_acc_index(int q_head, int d, int token,
@@ -98,32 +91,6 @@ __device__ __forceinline__ int causal_small_t_default_splits(int window) {
         return splits < kSplitsCeiling ? splits : kSplitsCeiling;
     }
     return splits;
-}
-
-template <typename Geometry, bool Int8>
-__device__ __forceinline__ int causal_small_t_active_splits(int window, int launch_capacity,
-                                                            int tokens) {
-    if (window <= 0) { return launch_capacity; }
-    int splits = 0;
-    if constexpr (Int8) {
-        if (tokens == 5 && window > 128 && window <= 512) {
-            splits = div_up(window, 32 / Geometry::SmallTSplitScale);
-        } else if (tokens >= 6 && window > 128 && window <= 160) {
-            constexpr int kKeysPerSplit = Geometry::SmallTSplitScale == 2 ? 17 : 24;
-            splits                      = div_up(window, kKeysPerSplit);
-        } else if (tokens >= 6 && window > 5000 && window <= 8198) {
-            splits             = div_up(window, 192 / Geometry::SmallTSplitScale);
-            constexpr int kMin = 4 * Geometry::SmallTSplitScale;
-            constexpr int kMax = 42 * Geometry::SmallTSplitScale;
-            splits             = splits > kMin ? splits : kMin;
-            splits             = splits < kMax ? splits : kMax;
-        } else {
-            splits = causal_small_t_default_splits<Geometry>(window);
-        }
-    } else {
-        splits = causal_small_t_default_splits<Geometry>(window);
-    }
-    return splits < launch_capacity ? splits : launch_capacity;
 }
 
 template <typename Geometry>
@@ -202,76 +169,5 @@ causal_merge_split_statistics(const float* partial_m, const float* partial_l, in
     return total;
 }
 
-template <typename Geometry, int DChunk, bool Int8, bool MultiBatch, bool Masked, bool Offset>
-__launch_bounds__(256) __global__ void causal_attention_small_t_reduce_output_kernel(
-    const float* partial_acc, const float* partial_m, const float* partial_l,
-    const std::int32_t* positions, const std::int32_t* valid_columns, std::int32_t tokens,
-    std::int32_t full_width, std::int32_t column_begin, std::int32_t batch_size,
-    std::int32_t split_count, __nv_bfloat16* out) {
-    static_assert(DChunk > 0 && DChunk <= kCausalHeadDim);
-
-    const int q_head      = static_cast<int>(blockIdx.x);
-    const int d_start     = static_cast<int>(blockIdx.y) * DChunk;
-    const int flat_column = static_cast<int>(blockIdx.z);
-    int batch             = 0;
-    int token             = flat_column;
-    if constexpr (MultiBatch) {
-        batch = flat_column / tokens;
-        token = flat_column - batch * tokens;
-    }
-    const int tid = threadIdx.x;
-    if (q_head >= Geometry::QHeads || token >= tokens) { return; }
-    if constexpr (MultiBatch) {
-        if (batch >= batch_size) { return; }
-    }
-
-    if constexpr (Offset) { positions += column_begin; }
-    if constexpr (MultiBatch) { positions += batch * full_width; }
-    const int last_pos = positions[tokens - 1];
-    int output_column  = token;
-    if constexpr (Offset) { output_column += column_begin; }
-    if constexpr (MultiBatch) { output_column += batch * full_width; }
-    if constexpr (Masked) {
-        const int absolute_column = token + (Offset ? column_begin : 0);
-        if (absolute_column >= valid_columns[batch]) {
-            if (tid < DChunk && d_start + tid < kCausalHeadDim)
-                out[causal_q_index<Geometry>(q_head, d_start + tid, output_column)] =
-                    __float2bfloat16(0.0f);
-            return;
-        }
-    }
-
-
-    if constexpr (MultiBatch) {
-        const std::int64_t partial_acc_row = static_cast<std::int64_t>(batch) * kCausalHeadDim *
-                                             Geometry::QHeads * tokens * split_count;
-        const std::int64_t partial_stat_row =
-            static_cast<std::int64_t>(batch) * Geometry::QHeads * tokens * split_count;
-        partial_acc += partial_acc_row;
-        partial_m += partial_stat_row;
-        partial_l += partial_stat_row;
-    }
-
-    const int window = last_pos + 1;
-    const int active_split_count =
-        causal_small_t_active_splits<Geometry, Int8>(window, split_count, tokens);
-
-    __shared__ float weights[256], warp_sums[8], scalars[2];
-    const float head_l =
-        causal_merge_split_statistics<Geometry>(partial_m, partial_l, q_head, token, tokens,
-                                                active_split_count, weights, warp_sums, scalars);
-    const int d = d_start + tid;
-    if (tid >= DChunk || d >= kCausalHeadDim) return;
-    float numerator = 0.0f;
-    for (int split = 0; split < active_split_count; ++split) {
-        if (weights[split] != 0.0f)
-            numerator +=
-                partial_acc[causal_partial_acc_index<Geometry>(q_head, d, token, split, tokens)] *
-                weights[split];
-    }
-
-    const float value = (head_l > 0.0f) ? numerator / head_l : 0.0f;
-    out[causal_q_index<Geometry>(q_head, d, output_column)] = __float2bfloat16(value);
-}
 
 } // namespace ninfer::ops
