@@ -6,6 +6,8 @@
 #include "ops/softmax_attention/dense/causal_cache/launch.h"
 #include "ops/softmax_attention/dense/causal_cache/bf16/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/bf16/launch.h"
+#include "ops/softmax_attention/dense/causal_cache/fp8/plan.h"
+#include "ops/softmax_attention/dense/causal_cache/fp8/launch.h"
 
 #include <algorithm>
 #include <cmath>
@@ -287,11 +289,10 @@ void for_each_small_t_chunk(const Tensor& q, const Tensor& positions, WorkspaceA
                             KvCacheStorage cache_storage, CausalAttentionExecutionEnvelope envelope,
                             Tensor& out, Launch&& launch) {
     for (std::int32_t begin = 0; begin < q.ne[2];
-         begin +=
-         causal_attention_chunk_tokens(q.ne[1], q.ne[2], 1, cache_storage, envelope)) {
-        const std::int32_t count = std::min(
-            causal_attention_chunk_tokens(q.ne[1], q.ne[2], 1, cache_storage, envelope),
-            q.ne[2] - begin);
+         begin += causal_attention_chunk_tokens(q.ne[1], q.ne[2], 1, cache_storage, envelope)) {
+        const std::int32_t count =
+            std::min(causal_attention_chunk_tokens(q.ne[1], q.ne[2], 1, cache_storage, envelope),
+                     q.ne[2] - begin);
         auto chunk_scope = workspace.scope();
         const std::int32_t splits =
             detail::causal_attention_split_capacity(q.ne[1], count, cache_storage, envelope);
@@ -309,11 +310,11 @@ void launch_chunked_small_t(const Tensor& q, const Tensor& k, const Tensor& v,
                             CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
                             Tensor& out, cudaStream_t stream) {
     for (std::int32_t begin = 0; begin < q.ne[2];
-         begin += causal_attention_chunk_tokens(q.ne[1], q.ne[2], q.ne[3], cache.storage,
-                                                        envelope)) {
-        const std::int32_t count  = std::min(causal_attention_chunk_tokens(
-                                                q.ne[1], q.ne[2], q.ne[3], cache.storage, envelope),
-                                             q.ne[2] - begin);
+         begin +=
+         causal_attention_chunk_tokens(q.ne[1], q.ne[2], q.ne[3], cache.storage, envelope)) {
+        const std::int32_t count = std::min(
+            causal_attention_chunk_tokens(q.ne[1], q.ne[2], q.ne[3], cache.storage, envelope),
+            q.ne[2] - begin);
         auto chunk_scope          = workspace.scope();
         const std::int32_t splits = detail::causal_attention_split_capacity(
             q.ne[1], count, cache.storage, envelope, q.ne[3]);
@@ -346,8 +347,8 @@ namespace detail {
 CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::int32_t width,
                                                     std::int32_t batch_size, KvCacheStorage storage,
                                                     CausalAttentionExecutionEnvelope envelope) {
-    if (storage == KvCacheStorage::BFloat16)
-        throw std::logic_error("BF16 attention has its own plan");
+    if (storage == KvCacheStorage::BFloat16 || storage == KvCacheStorage::Fp8E4M3Row256)
+        throw std::logic_error("BF16/FP8 attention owns its plan");
     if (q_heads == 24 && width <= kMaximumVerifyTokens) {
         if (batch_size == 1) {
             std::uint32_t prompt_limit = 0;
@@ -358,8 +359,7 @@ CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::i
                 prompt_limit = width <= 8 ? 0 : 256;
                 break;
             case KvCacheStorage::Fp8E4M3Row256:
-                prompt_limit = width <= 4 ? 0 : width <= 8 ? 128 : 320;
-                break;
+                throw std::logic_error("FP8 attention owns its plan");
             case KvCacheStorage::Nvfp4Group16:
                 prompt_limit = width <= 8 ? 0 : 256;
                 break;
@@ -416,6 +416,9 @@ std::size_t causal_softmax_attention_workspace_capacity_bytes(
     if (cache_storage == KvCacheStorage::BFloat16)
         return detail::bf16_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
 
+    if (cache_storage == KvCacheStorage::Fp8E4M3Row256)
+        return detail::fp8_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
+
     const auto chunk_capacity = [&](std::int32_t width) {
         const std::int32_t splits = detail::causal_attention_split_capacity(
             q_heads, width, cache_storage, envelope, batch_size);
@@ -430,12 +433,12 @@ std::size_t causal_softmax_attention_workspace_capacity_bytes(
         if (route == detail::CausalAttentionRoute::SmallT) { return chunk_capacity(width); }
         std::size_t maximum = 0;
         for (std::int32_t begin = 0; begin < width;
-             begin += causal_attention_chunk_tokens(q_heads, width, batch_size,
-                                                            cache_storage, envelope)) {
+             begin +=
+             causal_attention_chunk_tokens(q_heads, width, batch_size, cache_storage, envelope)) {
             maximum = std::max(
                 maximum,
-                chunk_capacity(std::min(causal_attention_chunk_tokens(
-                                            q_heads, width, batch_size, cache_storage, envelope),
+                chunk_capacity(std::min(causal_attention_chunk_tokens(q_heads, width, batch_size,
+                                                                      cache_storage, envelope),
                                         width - begin)));
         }
         return maximum;
@@ -473,6 +476,12 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
 
     if (cache.storage == KvCacheStorage::BFloat16) {
         detail::bf16_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale,
+                                         cache, envelope, workspace, out, stream);
+        return;
+    }
+
+    if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
+        detail::fp8_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale,
                                         cache, envelope, workspace, out, stream);
         return;
     }
@@ -508,7 +517,14 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
     validate_attention_tensors(q, positions, out, geometry, cache, envelope, scale, op);
 
     if (cache.storage == KvCacheStorage::BFloat16) {
-        detail::bf16_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out, stream);
+        detail::bf16_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
+                                         stream);
+        return;
+    }
+
+    if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
+        detail::fp8_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
+                                        stream);
         return;
     }
 

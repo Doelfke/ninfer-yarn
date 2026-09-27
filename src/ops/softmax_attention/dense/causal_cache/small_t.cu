@@ -58,11 +58,6 @@ std::int32_t causal_small_t_split_upper_bound(std::int32_t window) {
 template <typename Geometry>
 std::int32_t causal_small_t_split_count(std::int32_t window, std::int32_t tokens,
                                         KvCacheStorage storage) {
-    if constexpr (Geometry::SmallTSplitScale == 1) {
-        if (storage == KvCacheStorage::Fp8E4M3Row256 && tokens == 1 && window > 8198) {
-            return Geometry::SmallTMaximumSplits;
-        }
-    }
     // A 64-key default split just above a 32-key boundary makes the partial kernel execute a
     // nearly empty second tile. T=5 uses one 32-key tile per split; the short T>=6 profile keeps
     // all newly appended rows in one tail split while retaining a useful B=8 grid.
@@ -327,12 +322,6 @@ void causal_attention_small_t_launch(
                                              partial_l, out, stream);
         return;
     }
-    if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
-        causal_attention_small_t_fp8_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
-                                            envelope, column_begin, width, partial_acc, partial_m,
-                                            partial_l, out, stream);
-        return;
-    }
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {
         causal_attention_small_t_nvfp4_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
                                               envelope, column_begin, width, partial_acc, partial_m,
@@ -368,11 +357,6 @@ void causal_attention_cached_small_t_launch(const Tensor& q, const Tensor& pos, 
     if (cache.storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         causal_attention_cached_small_t_k8v4_launch(q, pos, scale, cache, envelope, partial_acc,
                                                     partial_m, partial_l, out, stream);
-        return;
-    }
-    if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
-        causal_attention_cached_small_t_fp8_launch(q, pos, scale, cache, envelope, partial_acc,
-                                                   partial_m, partial_l, out, stream);
         return;
     }
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {

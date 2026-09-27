@@ -2323,6 +2323,31 @@ int run_fp8_cases() {
                             MappingPattern::Identity);
     failures += run_a1_case(kGeometries[0], KvCacheStorage::Fp8E4M3Row256, {1, 16384, 16385, 607u},
                             MappingPattern::Fragmented);
+    // Partial query tiles, device metadata updates and large production prefill rows.
+    for (const auto& geometry : kGeometries) {
+        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256,
+                                {16, 1024, 4096, 608u, false, true}, MappingPattern::Fragmented);
+        failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256,
+                                {13, 513, 8192, 609u, false, true}, MappingPattern::Fragmented);
+        failures += run_batch_case(
+            geometry, KvCacheStorage::Fp8E4M3Row256,
+            {16, {17, 1025, 64}, {0, 7, 16}, {2, 0, 1}, MappingPattern::Fragmented, 610u, true});
+        const std::array<int, 4> queries{0, 63, 64, 1023};
+        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {1024, 8192, 9216, 611u},
+                                MappingPattern::Fragmented, queries);
+        failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256,
+                                {1, 63, 64, 612u, false, true}, MappingPattern::Fragmented);
+        failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256,
+                                {1, 0, 1, 613u, false, true}, MappingPattern::Fragmented);
+        failures += run_batch_case(
+            geometry, KvCacheStorage::Fp8E4M3Row256,
+            {1, {0, 31, 63}, {0, 1, 1}, {2, 0, 1}, MappingPattern::Fragmented, 614u, true});
+    }
+    failures += run_a3_case(kGeometries[1], KvCacheStorage::Fp8E4M3Row256,
+                            {7, 511, 8192, 615u, false, true}, MappingPattern::Fragmented);
+    failures += run_batch_case(
+        kGeometries[1], KvCacheStorage::Fp8E4M3Row256,
+        {7, {17, 4097, 64}, {0, 5, 7}, {2, 0, 1}, MappingPattern::Fragmented, 616u, true});
     return failures;
 }
 

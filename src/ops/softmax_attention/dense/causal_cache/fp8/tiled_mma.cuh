@@ -1,99 +1,45 @@
 #pragma once
 
-// Row-scaled E4M3FN-cache causal prompt kernel. Q and cached K use the same fixed D256
-// rotation, native E4M3 K32 Tensor Cores, and FP32 dot-product accumulation. V codes widen
-// exactly to FP16, receive their represented FP16 row scale once, and feed FP16/FP32 PV MMA.
-
-#include "ops/kv_cache/fp8_e4m3_row_codec.cuh"
+#include "ops/softmax_attention/dense/causal_cache/fp8/schedule.cuh"
+#include "ops/softmax_attention/dense/causal_cache/fp8/epilogue.cuh"
+#include "ops/softmax_attention/dense/causal_cache/fp8/softmax.cuh"
 #include "ops/kv_cache/hadamard_d256.cuh"
-#include "ops/softmax_attention/dense/causal_cache/prompt_common.cuh"
 
-#include <cuda_bf16.h>
-#include <cuda_fp16.h>
-#include <math_constants.h>
+namespace ninfer::ops::detail {
 
-#include <cstdint>
-
-namespace ninfer::ops {
-
-inline constexpr int kCausalPromptFp8Warps         = 16;
-inline constexpr int kCausalPromptFp8Threads       = kCausalPromptFp8Warps * 32;
-inline constexpr int kCausalPromptFp8Br            = 64;
-inline constexpr int kCausalPromptFp8Bc            = 64;
-inline constexpr int kCausalPromptFp8DB16          = kCausalPromptHeadDim / 2;
-inline constexpr int kCausalPromptFp8RowTiles      = kCausalPromptFp8Br / 16;
-inline constexpr int kCausalPromptFp8ProducerWarps = 2 * kCausalPromptFp8RowTiles;
-inline constexpr int kCausalPromptFp8DConsumers = kCausalPromptFp8Warps / kCausalPromptFp8RowTiles;
-
-inline constexpr int kCausalPromptFp8QBytes = kCausalPromptFp8Br * kCausalPromptHeadDim;
-inline constexpr int kCausalPromptFp8QScaleBytes =
-    kCausalPromptFp8Br * static_cast<int>(sizeof(float));
-inline constexpr int kCausalPromptFp8KBytes = kCausalPromptFp8Bc * kCausalPromptHeadDim;
-inline constexpr int kCausalPromptFp8VBytes = kCausalPromptFp8Bc * kCausalPromptHeadDim;
-inline constexpr int kCausalPromptFp8VStageBytes =
-    kCausalPromptFp8Bc * kCausalPromptHeadDim * static_cast<int>(sizeof(__half));
-inline constexpr int kCausalPromptFp8PBytes =
-    kCausalPromptFp8Br * kCausalPromptFp8Bc * static_cast<int>(sizeof(__half));
-inline constexpr int kCausalPromptFp8ScaleBytes =
-    2 * kCausalPromptFp8Bc * static_cast<int>(sizeof(__half));
-inline constexpr int kCausalPromptFp8StatsBytes =
-    7 * kCausalPromptFp8Br * static_cast<int>(sizeof(float));
-inline constexpr int kCausalPromptFp8SmemBytes =
-    kCausalPromptFp8QBytes + kCausalPromptFp8QScaleBytes + kCausalPromptFp8KBytes +
-    kCausalPromptFp8VBytes + kCausalPromptFp8VStageBytes + kCausalPromptFp8PBytes +
-    kCausalPromptFp8ScaleBytes + kCausalPromptFp8StatsBytes;
-
-static_assert(kCausalPromptFp8DConsumers == 4);
-static_assert(kCausalPromptFp8SmemBytes == 92416);
-
-__device__ __forceinline__ int4 causal_prompt_fp8_dequant_f16x8(const std::uint8_t* codes8,
-                                                                __half scale) {
-    const int2 raw         = load_vec<int2>(codes8);
-    const std::uint16_t* c = reinterpret_cast<const std::uint16_t*>(&raw);
-    unsigned packed[4];
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        const __half2 value2 = kv_cache_fp8_dequant_code2_to_half2(c[i], scale);
-        packed[i]            = *reinterpret_cast<const unsigned*>(&value2);
-    }
-    return make_int4(static_cast<int>(packed[0]), static_cast<int>(packed[1]),
-                     static_cast<int>(packed[2]), static_cast<int>(packed[3]));
-}
-
-template <typename Geometry, typename Metadata>
-__global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
+template <class Geometry, class Schedule, class Metadata>
+__global__ __maxnreg__(Schedule::kMaxRegisters) void fp8_kv_tiled_mma_kernel(
     const __nv_bfloat16* __restrict__ q, const std::uint8_t* __restrict__ cache_k,
     const std::uint8_t* __restrict__ cache_v, const __half* __restrict__ cache_k_scale,
     const __half* __restrict__ cache_v_scale, Metadata metadata,
     const std::int32_t* __restrict__ positions, float scale, __nv_bfloat16* __restrict__ out,
     std::int32_t width) {
-    constexpr int D             = kCausalPromptHeadDim;
-    constexpr int Br            = kCausalPromptFp8Br;
-    constexpr int Bc            = kCausalPromptFp8Bc;
-    constexpr int DB16          = kCausalPromptFp8DB16;
+    constexpr int D             = 256;
+    constexpr int Br            = Schedule::kQueryRows;
+    constexpr int Bc            = Schedule::kKeyRows;
+    constexpr int DB16          = 128;
     constexpr int QKKs          = D / 32;
     constexpr int QKNt          = (Bc / 2) / 8;
-    constexpr int PVNtPerWarp   = D / (kCausalPromptFp8DConsumers * 8);
+    constexpr int PVNtPerWarp   = D / (Schedule::kDConsumers * 8);
     constexpr int PVKs          = Bc / 16;
-    constexpr int ProducerWarps = kCausalPromptFp8ProducerWarps;
-    constexpr int VWorkerWarps  = kCausalPromptFp8Warps - ProducerWarps;
+    constexpr int ProducerWarps = Schedule::kProducerWarps;
+    constexpr int VWorkerWarps  = Schedule::kWarps - ProducerWarps;
     constexpr int WorkerThreads = VWorkerWarps * 32;
-    constexpr float Log2E       = 1.4426950408889634074f;
     constexpr unsigned FullMask = 0xffffffffU;
     static_assert(QKKs == 8);
     static_assert(PVNtPerWarp == 8);
 
     extern __shared__ __align__(16) unsigned char smem_raw[];
     std::uint8_t* q_fp8 = reinterpret_cast<std::uint8_t*>(smem_raw);
-    float* q_scale      = reinterpret_cast<float*>(q_fp8 + kCausalPromptFp8QBytes);
+    float* q_scale      = reinterpret_cast<float*>(q_fp8 + Schedule::kQBytes);
     std::uint8_t* k_fp8 = reinterpret_cast<std::uint8_t*>(
-        reinterpret_cast<unsigned char*>(q_scale) + kCausalPromptFp8QScaleBytes);
-    std::uint8_t* v_fp8 = k_fp8 + kCausalPromptFp8KBytes;
-    __half* v_f16       = reinterpret_cast<__half*>(v_fp8 + kCausalPromptFp8VBytes);
-    __half* p_s         = reinterpret_cast<__half*>(reinterpret_cast<unsigned char*>(v_f16) +
-                                                    kCausalPromptFp8VStageBytes);
+        reinterpret_cast<unsigned char*>(q_scale) + Schedule::kQScaleBytes);
+    std::uint8_t* v_fp8 = k_fp8 + Schedule::kKBytes;
+    __half* v_f16       = reinterpret_cast<__half*>(v_fp8 + Schedule::kVBytes);
+    __half* p_s =
+        reinterpret_cast<__half*>(reinterpret_cast<unsigned char*>(v_f16) + Schedule::kVStageBytes);
     __half* k_scale_s =
-        reinterpret_cast<__half*>(reinterpret_cast<unsigned char*>(p_s) + kCausalPromptFp8PBytes);
+        reinterpret_cast<__half*>(reinterpret_cast<unsigned char*>(p_s) + Schedule::kPBytes);
     __half* v_scale_s    = k_scale_s + Bc;
     float* running_m_s   = reinterpret_cast<float*>(v_scale_s + Bc);
     float* running_l_s   = running_m_s + Br;
@@ -113,8 +59,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
     const int tokens  = metadata.valid_tokens(width);
     if (q_head >= Geometry::QHeads || q0 >= width) return;
     if (q0 >= tokens) {
-        causal_prompt_zero_output_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid,
-                                                 kCausalPromptFp8Threads);
+        fp8_kv_zero_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid, Schedule::kThreads);
         return;
     }
     const int base_pos              = positions[0];
@@ -123,16 +68,15 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
     const int max_query_abs         = base_pos + q0 + tile_rows - 1;
     const int key_blocks            = max_query_abs / Bc + 1;
 
-    for (int row = warp; row < Br; row += kCausalPromptFp8Warps) {
+    for (int row = warp; row < Br; row += Schedule::kWarps) {
         float values[8];
         float local_absmax = 0.0F;
 #pragma unroll
         for (int r = 0; r < 8; ++r) {
             const int d = lane + 32 * r;
-            values[r] =
-                row < tile_rows
-                    ? __bfloat162float(q[causal_prompt_q_index<Geometry>(q_head, d, q0 + row)])
-                    : 0.0F;
+            values[r]   = row < tile_rows
+                              ? __bfloat162float(q[fp8_kv_q_index<Geometry>(q_head, d, q0 + row)])
+                              : 0.0F;
         }
         normalized_hadamard_d256_inplace(values, lane);
 #pragma unroll
@@ -143,8 +87,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
 #pragma unroll
         for (int r = 0; r < 8; ++r) {
             const int d = lane + 32 * r;
-            causal_prompt_store_byte_swizzled(q_fp8, row, d,
-                                              kv_cache_fp8_quant_code(values[r], inv));
+            fp8_kv_store_query_code(q_fp8, row, d, kv_cache_fp8_quant_code(values[r], inv));
         }
         if (lane == 0) q_scale[row] = qs;
     }
@@ -166,7 +109,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
     float q_scale_r0 = 0.0F;
     float q_scale_r1 = 0.0F;
     if (warp < ProducerWarps) {
-        const int row0 = (warp >> 1) * 16 + gid;
+        const int row0 = (warp / 2) * 16 + gid;
         const int row1 = row0 + 8;
         q_scale_r0     = __shfl_sync(FullMask, lid == 0 ? q_scale[row0] : 0.0F, gid * 4);
         q_scale_r1     = __shfl_sync(FullMask, lid == 0 ? q_scale[row1] : 0.0F, gid * 4);
@@ -198,7 +141,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
             const int dc     = chunk - key_l * (D / 16);
             const int d      = dc * 16;
             const int key    = tile_k0 + key_l;
-            std::uint8_t* kd = &k_fp8[(key_l * DB16 + causal_prompt_swz(key_l, dc * 8)) * 2];
+            std::uint8_t* kd = &k_fp8[(key_l * DB16 + fp8_kv_swizzle(key_l, dc * 8)) * 2];
             std::uint8_t* vd = &v_fp8[key_l * D + d];
             if (key <= max_query_abs) {
                 const std::int64_t off = kv_cache_fp8_code_index<Geometry>(physical_page, kv_head,
@@ -218,7 +161,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
         issue_kv_codes(tile_k0, cooperative_tid, cooperative_threads);
     };
 
-    issue_kv_tile(0, tid, kCausalPromptFp8Threads);
+    issue_kv_tile(0, tid, Schedule::kThreads);
     ninfer::ops::cp_wait<0>();
     __syncthreads();
 
@@ -228,12 +171,12 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
 #pragma unroll
         for (int i = 0; i < 4; ++i) acc[n][i] = 0.0F;
     }
-    const float scale_l2 = scale * Log2E;
+    const float scale_l2 = scale * kFp8KvLog2E;
     for (int kb = 0; kb < key_blocks; ++kb) {
         const int k0 = kb * Bc;
         if (warp < ProducerWarps) {
-            const int row_base = (warp >> 1) * 16;
-            const int col_half = warp & 1;
+            const int row_base = (warp / 2) * 16;
+            const int col_half = warp % 2;
             const int col_base = col_half * (Bc / 2);
             float score[QKNt][4];
 #pragma unroll
@@ -246,14 +189,14 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
                 unsigned af[4];
                 ldmatrix_x4(af[0], af[1], af[2], af[3],
                             smem_addr(&q_b16[(row_base + a_rowoff) * DB16 +
-                                             causal_prompt_swz(row_base + a_rowoff, acol)]));
+                                             fp8_kv_swizzle(row_base + a_rowoff, acol)]));
 #pragma unroll
                 for (int nt = 0; nt < QKNt; ++nt) {
                     const int brow = col_base + nt * 8 + b_rin;
                     const int bcol = kk * 16 + b_koff;
                     unsigned bf[2];
                     ldmatrix_x2(bf[0], bf[1],
-                                smem_addr(&k_b16[brow * DB16 + causal_prompt_swz(brow, bcol)]));
+                                smem_addr(&k_b16[brow * DB16 + fp8_kv_swizzle(brow, bcol)]));
                     mma_fp8_e4m3(score[nt][0], score[nt][1], score[nt][2], score[nt][3], af[0],
                                  af[1], af[2], af[3], bf[0], bf[1]);
                 }
@@ -298,8 +241,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
                 partial_m_s[col_half * Br + row0] = bm0;
                 partial_m_s[col_half * Br + row1] = bm1;
             }
-            asm volatile("bar.sync 1, 256;" ::: "memory");
-
+            asm volatile("bar.sync 1, %0;" ::"n"(Schedule::kProducerThreads) : "memory");
             bm0                     = fmaxf(partial_m_s[row0], partial_m_s[Br + row0]);
             bm1                     = fmaxf(partial_m_s[row1], partial_m_s[Br + row1]);
             const float previous_m0 = running_m_s[row0];
@@ -310,10 +252,10 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
             const float nm1_scaled  = nm1 * scale_l2;
             const float alpha0      = previous_m0 == -CUDART_INF_F
                                           ? 0.0F
-                                          : exp2_approx(__fmaf_rn(previous_m0, scale_l2, -nm0_scaled));
+                                          : fp8_kv_exp_scaled(previous_m0, nm0_scaled, scale_l2);
             const float alpha1      = previous_m1 == -CUDART_INF_F
                                           ? 0.0F
-                                          : exp2_approx(__fmaf_rn(previous_m1, scale_l2, -nm1_scaled));
+                                          : fp8_kv_exp_scaled(previous_m1, nm1_scaled, scale_l2);
             float bl0               = 0.0F;
             float bl1               = 0.0F;
 #pragma unroll
@@ -321,23 +263,23 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
                 const int col0  = col_base + nt * 8 + 2 * lid;
                 const int col1  = col0 + 1;
                 const float p00 = score[nt][0] > -CUDART_INF_F
-                                      ? exp2_approx(__fmaf_rn(score[nt][0], scale_l2, -nm0_scaled))
+                                      ? fp8_kv_exp_scaled(score[nt][0], nm0_scaled, scale_l2)
                                       : 0.0F;
                 const float p01 = score[nt][1] > -CUDART_INF_F
-                                      ? exp2_approx(__fmaf_rn(score[nt][1], scale_l2, -nm0_scaled))
+                                      ? fp8_kv_exp_scaled(score[nt][1], nm0_scaled, scale_l2)
                                       : 0.0F;
                 const float p10 = score[nt][2] > -CUDART_INF_F
-                                      ? exp2_approx(__fmaf_rn(score[nt][2], scale_l2, -nm1_scaled))
+                                      ? fp8_kv_exp_scaled(score[nt][2], nm1_scaled, scale_l2)
                                       : 0.0F;
                 const float p11 = score[nt][3] > -CUDART_INF_F
-                                      ? exp2_approx(__fmaf_rn(score[nt][3], scale_l2, -nm1_scaled))
+                                      ? fp8_kv_exp_scaled(score[nt][3], nm1_scaled, scale_l2)
                                       : 0.0F;
                 bl0 += p00 + p01;
                 bl1 += p10 + p11;
-                p_s[row0 * Bc + causal_prompt_p_swz<Bc>(row0, col0)] = __float2half_rn(p00);
-                p_s[row0 * Bc + causal_prompt_p_swz<Bc>(row0, col1)] = __float2half_rn(p01);
-                p_s[row1 * Bc + causal_prompt_p_swz<Bc>(row1, col0)] = __float2half_rn(p10);
-                p_s[row1 * Bc + causal_prompt_p_swz<Bc>(row1, col1)] = __float2half_rn(p11);
+                p_s[row0 * Bc + fp8_kv_probability_swizzle<Bc>(row0, col0)] = __float2half_rn(p00);
+                p_s[row0 * Bc + fp8_kv_probability_swizzle<Bc>(row0, col1)] = __float2half_rn(p01);
+                p_s[row1 * Bc + fp8_kv_probability_swizzle<Bc>(row1, col0)] = __float2half_rn(p10);
+                p_s[row1 * Bc + fp8_kv_probability_swizzle<Bc>(row1, col1)] = __float2half_rn(p11);
             }
             bl0 = warp_sum<4>(bl0, FullMask);
             bl1 = warp_sum<4>(bl1, FullMask);
@@ -345,16 +287,9 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
                 partial_l_s[col_half * Br + row0] = bl0;
                 partial_l_s[col_half * Br + row1] = bl1;
             }
-            asm volatile("bar.sync 1, 256;" ::: "memory");
             if (col_half == 0 && lid == 0) {
-                const float tile_l0 = partial_l_s[row0] + partial_l_s[Br + row0];
-                const float tile_l1 = partial_l_s[row1] + partial_l_s[Br + row1];
-                running_l_s[row0]   = __fmaf_rn(running_l_s[row0], alpha0, tile_l0);
-                running_l_s[row1]   = __fmaf_rn(running_l_s[row1], alpha1, tile_l1);
-                running_m_s[row0]   = nm0;
-                running_m_s[row1]   = nm1;
-                alpha_s[row0]       = alpha0;
-                alpha_s[row1]       = alpha1;
+                alpha_s[row0] = alpha0;
+                alpha_s[row1] = alpha1;
             }
         } else if (warp < ProducerWarps + VWorkerWarps) {
             const int worker_tid = tid - ProducerWarps * 32;
@@ -364,10 +299,9 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
                 const int dc    = chunk - key_l * (D / 8);
                 const int d     = dc * 8;
                 const int key   = k0 + key_l;
-                __half* dst     = &v_f16[key_l * D + causal_prompt_swz(key_l, d)];
+                __half* dst     = &v_f16[key_l * D + fp8_kv_swizzle(key_l, d)];
                 if (key <= max_query_abs) {
-                    store_vec(dst, causal_prompt_fp8_dequant_f16x8(&v_fp8[key_l * D + d],
-                                                                   v_scale_s[key_l]));
+                    store_vec(dst, fp8_kv_dequant_f16x8(&v_fp8[key_l * D + d], v_scale_s[key_l]));
                 } else {
                     store_vec(dst, make_int4(0, 0, 0, 0));
                 }
@@ -375,11 +309,26 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
         }
         __syncthreads();
 
+        // The CTA barrier also publishes the two producers' probability sums.
+        // Update m only after every producer has read its previous value. Both state
+        // updates overlap prefetch/PV and need no separate producer barrier.
+        if (warp < ProducerWarps && warp % 2 == 0 && lid == 0) {
+            const int row0      = (warp / 2) * 16 + gid;
+            const int row1      = row0 + 8;
+            const float tile_l0 = partial_l_s[row0] + partial_l_s[Br + row0];
+            const float tile_l1 = partial_l_s[row1] + partial_l_s[Br + row1];
+            running_l_s[row0]   = __fmaf_rn(running_l_s[row0], alpha_s[row0], tile_l0);
+            running_l_s[row1]   = __fmaf_rn(running_l_s[row1], alpha_s[row1], tile_l1);
+            running_m_s[row0] =
+                fmaxf(running_m_s[row0], fmaxf(partial_m_s[row0], partial_m_s[Br + row0]));
+            running_m_s[row1] =
+                fmaxf(running_m_s[row1], fmaxf(partial_m_s[row1], partial_m_s[Br + row1]));
+        }
         const bool has_next = kb + 1 < key_blocks;
-        if (has_next) issue_kv_tile((kb + 1) * Bc, tid, kCausalPromptFp8Threads);
+        if (has_next) issue_kv_tile((kb + 1) * Bc, tid, Schedule::kThreads);
 
-        const int row_tile = warp % kCausalPromptFp8RowTiles;
-        const int d_slice  = warp / kCausalPromptFp8RowTiles;
+        const int row_tile = warp % Schedule::kRowTiles;
+        const int d_slice  = warp / Schedule::kRowTiles;
         const int row_base = row_tile * 16;
         const float alpha0 = alpha_s[row_base + gid];
         const float alpha1 = alpha_s[row_base + gid + 8];
@@ -397,7 +346,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
             const int pcol = k * 16 + a_coloff;
             ldmatrix_x4(pf[0], pf[1], pf[2], pf[3],
                         smem_addr(&p_s[(row_base + a_rowoff) * Bc +
-                                       causal_prompt_p_swz<Bc>(row_base + a_rowoff, pcol)]));
+                                       fp8_kv_probability_swizzle<Bc>(row_base + a_rowoff, pcol)]));
 #pragma unroll
             for (int n = 0; n < PVNtPerWarp; ++n) {
                 const int global_n = d_slice * PVNtPerWarp + n;
@@ -405,7 +354,7 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
                 const int vrow = k * 16 + b_koff + b_rin;
                 const int vcol = global_n * 8;
                 ldmatrix_x2_t(vf[0], vf[1],
-                              smem_addr(&v_f16[vrow * D + causal_prompt_swz(vrow, vcol)]));
+                              smem_addr(&v_f16[vrow * D + fp8_kv_swizzle(vrow, vcol)]));
                 mma_f16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[0], pf[1], pf[2], pf[3],
                         vf[0], vf[1]);
             }
@@ -414,8 +363,8 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
         __syncthreads();
     }
 
-    const int row_tile = warp % kCausalPromptFp8RowTiles;
-    const int d_slice  = warp / kCausalPromptFp8RowTiles;
+    const int row_tile = warp % Schedule::kRowTiles;
+    const int d_slice  = warp / Schedule::kRowTiles;
     const int row_base = row_tile * 16;
     const int row0     = row_base + gid;
     const int row1     = row0 + 8;
@@ -425,19 +374,17 @@ __global__ __maxnreg__(120) void causal_attention_prompt_fp8_kernel(
     for (int n = 0; n < PVNtPerWarp; ++n) {
         const int d0 = (d_slice * PVNtPerWarp + n) * 8 + 2 * lid;
         if (row0 < tile_rows) {
-            *reinterpret_cast<unsigned*>(
-                &out[causal_prompt_q_index<Geometry>(q_head, d0, q0 + row0)]) =
-                pack_bf16x2(acc[n][0] * inv_l0, acc[n][1] * inv_l0);
+            fp8_kv_store_output_pair<Geometry>(out, q_head, d0, q0 + row0, acc[n][0] * inv_l0,
+                                               acc[n][1] * inv_l0);
         }
         if (row1 < tile_rows) {
-            *reinterpret_cast<unsigned*>(
-                &out[causal_prompt_q_index<Geometry>(q_head, d0, q0 + row1)]) =
-                pack_bf16x2(acc[n][2] * inv_l1, acc[n][3] * inv_l1);
+            fp8_kv_store_output_pair<Geometry>(out, q_head, d0, q0 + row1, acc[n][2] * inv_l1,
+                                               acc[n][3] * inv_l1);
         }
     }
 
-    causal_prompt_zero_output_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid,
-                                             kCausalPromptFp8Threads);
+    fp8_kv_zero_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid, Schedule::kThreads);
 }
 
-} // namespace ninfer::ops
+
+} // namespace ninfer::ops::detail
