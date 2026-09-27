@@ -1,5 +1,5 @@
 #pragma once
-#include "ops/softmax_attention/dense/causal_cache/nvfp4/geometry.h"
+#include "ops/softmax_attention/common/causal_geometry.h"
 
 namespace ninfer::ops::detail {
 template <int Tokens, int Warps, int Keys, int MinBlocks, bool Compact, bool Dynamic = true>

@@ -4,9 +4,12 @@
 
 namespace ninfer::ops::detail {
 
+// RTX 5090 target. Wave budgets remain owned by each dtype plan.
+inline constexpr int kCausalAttentionSmCount = 170;
+
 // Capture reserves partials for the largest live row. Producer and merge use
 // the same live count; a wider capture never changes a row's work partition.
-struct Int8KvPartition {
+struct CausalKvPartition {
     static constexpr int kMaxSplits = 256;
     int capacity                    = 1;
     int target                      = 1;

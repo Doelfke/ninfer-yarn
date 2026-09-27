@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ops/softmax_attention/dense/causal_cache/k8v4/geometry.h"
+#include "ops/softmax_attention/common/causal_geometry.h"
 
 namespace ninfer::ops::detail {
 

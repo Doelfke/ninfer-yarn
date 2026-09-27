@@ -2,21 +2,21 @@
 
 #include "core/device.h"
 #include "ops/softmax_attention/dense/causal_cache/nvfp4/grouped_mma.cuh"
-#include "ops/softmax_attention/dense/causal_cache/nvfp4/merge.cuh"
+#include "ops/softmax_attention/common/causal_merge.cuh"
 #include <stdexcept>
 
 namespace ninfer::ops::detail {
 
 template <class G, class S, bool MultiBatch, bool Masked, bool Writable, class Input,
           bool ParallelQueries = false>
-void launch_nvfp4_kv_grouped_mma(const Nvfp4KvOperands& p, Nvfp4KvCacheView<Writable> cache,
-                                 Input input, Nvfp4KvPartition partition,
-                                 Nvfp4KvPartialView partial, cudaStream_t stream) {
+void launch_nvfp4_kv_grouped_mma(const CausalAttentionOperands& p, Nvfp4KvCacheView<Writable> cache,
+                                 Input input, CausalKvPartition partition,
+                                 CausalPartialView partial, cudaStream_t stream) {
     static_assert(Writable == Input::writes_cache);
-    validate_nvfp4_kv_operands<G>(p, cache);
+    validate_quantized_causal_operands<G>(p, cache);
     if ((!ParallelQueries && p.width != S::kTokenTile) || MultiBatch != (p.batch > 1) ||
         Masked != (cache.valid_columns != nullptr) || partition.capacity < 1 ||
-        partition.target > Nvfp4KvPartition::kMaxSplits || partition.target < 1 ||
+        partition.target > CausalKvPartition::kMaxSplits || partition.target < 1 ||
         partition.key_shift < 6 || partition.key_shift > 12 ||
         partition.capacity != partition.active(p.visible_capacity) || !partial.acc ||
         !partial.maximum || !partial.sum)
@@ -40,16 +40,6 @@ void launch_nvfp4_kv_grouped_mma(const Nvfp4KvOperands& p, Nvfp4KvCacheView<Writ
     CUDA_CHECK(cudaGetLastError());
 }
 
-template <class G, class S, bool MultiBatch, bool Masked, bool Writable>
-void launch_nvfp4_kv_merge(const Nvfp4KvOperands& p, Nvfp4KvCacheView<Writable> cache,
-                           Nvfp4KvPartition partition, Nvfp4KvPartialView partial,
-                           cudaStream_t stream) {
-    const dim3 grid(G::QHeads, div_up(G::kHeadDim, S::kDChunk), p.width * p.batch);
-    nvfp4_kv_merge_kernel<G, S, MultiBatch, Masked>
-        <<<grid, S::kThreads, 0, stream>>>(partial.acc, partial.maximum, partial.sum, p.positions,
-                                           cache.valid_columns, p.width, p.batch, partition, p.out);
-    CUDA_CHECK(cudaGetLastError());
-}
 
 
 } // namespace ninfer::ops::detail

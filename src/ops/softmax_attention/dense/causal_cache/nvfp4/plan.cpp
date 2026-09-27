@@ -22,11 +22,11 @@ Nvfp4KvCausalPlan make_nvfp4_kv_causal_plan(int heads, int width, int batch,
     const int query_tile =
         family == Nvfp4KvFamily::ParallelGrouped ? (width + 1) / 2 : std::min(width, grouped_limit);
     const int row_tiles = (query_tile * (heads == 24 ? 6 : 8) + 15) / 16;
-    constexpr int sms   = 170;
+    constexpr int sms   = kCausalAttentionSmCount;
     const int wave_ctas = (sms / independent_tiles) * independent_tiles;
     const int budget    = row_tiles <= 2 || wave_ctas < sms * 9 / 10 ? 2 * sms : sms;
-    Nvfp4KvPartition partition{
-        1, std::clamp(budget / independent_tiles, 1, Nvfp4KvPartition::kMaxSplits)};
+    CausalKvPartition partition{
+        1, std::clamp(budget / independent_tiles, 1, CausalKvPartition::kMaxSplits)};
     // Bound partial traffic by keeping enough KV work in each split.
     partition.key_shift = (row_tiles <= 2 ? 7 : 8) - (heads == 16 ? 1 : 0);
     partition.capacity  = partition.active(envelope.max_visible_keys);
@@ -41,7 +41,7 @@ std::size_t nvfp4_kv_workspace_bytes(int heads, int batch, int min_width, int ma
         if (plan.family == Nvfp4KvFamily::Tiled) continue;
         const int splits = plan.partition.capacity;
         WorkspaceLayoutBuilder layout;
-        (void)nvfp4_kv_allocate_partials(layout, heads, width, splits, batch);
+        (void)allocate_causal_partials(layout, heads, width, splits, batch);
         maximum = std::max(maximum, layout.peak_bytes(1));
     }
     return maximum;

@@ -5,9 +5,9 @@
 
 namespace ninfer::ops::detail {
 template <class G, class S>
-void launch_nvfp4_kv_tiled_mma(const Nvfp4KvOperands& p, Nvfp4KvReadView cache,
+void launch_nvfp4_kv_tiled_mma(const CausalAttentionOperands& p, Nvfp4KvReadView cache,
                                cudaStream_t stream) {
-    validate_nvfp4_kv_operands<G>(p, cache);
+    validate_quantized_causal_operands<G>(p, cache);
     if (p.batch != 1)
         throw std::invalid_argument("NVFP4 tiled attention requires a complete single query row");
     const auto invoke = [&]<class Metadata>(Metadata metadata) {

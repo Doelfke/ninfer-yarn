@@ -1,5 +1,6 @@
 #include "ops/softmax_attention/dense/causal_cache/bf16/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/bf16/operands.h"
+#include "ops/softmax_attention/common/causal_partition.h"
 #include <algorithm>
 #include <stdexcept>
 
@@ -34,11 +35,12 @@ Bf16KvCausalPlan make_bf16_kv_causal_plan(int heads, int width, int batch,
     const bool many_memory_tiles    = description.query_rows == 32 && independent_tiles >= 16;
     const bool multiple_query_tiles = tiles > 1;
     const int long_ctas             = many_memory_tiles || multiple_query_tiles
-                                          ? std::clamp(85 * independent_tiles, 340, 1020)
-                                          : 340;
-    Bf16KvPartition partition{1, std::clamp(340 / independent_tiles, 1, 256),
-                              std::clamp(long_ctas / independent_tiles, 1, 256),
-                              description.key_rows};
+                                          ? std::clamp(85 * independent_tiles, (2 * kCausalAttentionSmCount),
+                                                       (6 * kCausalAttentionSmCount))
+                                          : (2 * kCausalAttentionSmCount);
+    Bf16KvPartition partition{
+        1, std::clamp((2 * kCausalAttentionSmCount) / independent_tiles, 1, 256),
+        std::clamp(long_ctas / independent_tiles, 1, 256), description.key_rows};
     // The envelope bounds the largest live row. Other batch rows may be shorter.
     const int low      = batch == 1 ? static_cast<int>(envelope.min_visible_keys) : 1;
     partition.capacity = std::max(
@@ -54,7 +56,7 @@ std::size_t bf16_kv_workspace_bytes(int heads, int batch, int min_width, int max
     for (int width = min_width; width <= std::min(max_width, 128 / group); ++width) {
         const auto plan = make_bf16_kv_causal_plan(heads, width, batch, envelope);
         WorkspaceLayoutBuilder layout;
-        (void)bf16_kv_allocate_partials(layout, heads, width, plan.partition.capacity, batch);
+        (void)allocate_causal_partials(layout, heads, width, plan.partition.capacity, batch);
         maximum = std::max(maximum, layout.peak_bytes(1));
     }
     return maximum;

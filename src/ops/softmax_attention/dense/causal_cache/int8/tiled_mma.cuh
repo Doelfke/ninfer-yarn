@@ -1,8 +1,9 @@
 #pragma once
+#include "ops/softmax_attention/dense/causal_cache/int8/tile_io.cuh"
 
 #include "ops/softmax_attention/dense/causal_cache/int8/schedule.cuh"
-#include "ops/softmax_attention/dense/causal_cache/int8/epilogue.cuh"
-#include "ops/softmax_attention/dense/causal_cache/int8/softmax.cuh"
+#include "ops/softmax_attention/common/causal_epilogue.cuh"
+#include "ops/softmax_attention/common/causal_softmax.cuh"
 
 namespace ninfer::ops::detail {
 
@@ -25,7 +26,7 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
     constexpr int ProducerWarps = Schedule::kRowTiles;
     constexpr int VWorkerWarps  = Schedule::kWarps - ProducerWarps;
     constexpr int WorkerThreads = VWorkerWarps * 32;
-    constexpr float Log2E       = kInt8KvLog2E;
+    constexpr float Log2E       = kLog2E;
     constexpr unsigned FullMask = 0xffffffffu;
 
     static_assert(GroupKc == 2);
@@ -58,7 +59,7 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
     const int tokens  = metadata.valid_tokens(width);
     if (q_head >= Geometry::QHeads || q0 >= width) { return; }
     if (q0 >= tokens) {
-        int8_kv_zero_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid, Schedule::kThreads);
+        causal_zero_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid, Schedule::kThreads);
         return;
     }
     const int base_pos              = positions[0];
@@ -76,7 +77,7 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
             const int d = lane + 32 * r;
             q_values[r] = 0.0f;
             if (row < tile_rows) {
-                q_values[r] = __bfloat162float(q[int8_kv_q_index<Geometry>(q_head, d, q0 + row)]);
+                q_values[r] = __bfloat162float(q[causal_q_index<Geometry>(q_head, d, q0 + row)]);
             }
         }
         normalized_hadamard_d256_inplace(q_values, lane);
@@ -91,8 +92,8 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
             absmax          = warp_max(absmax, FullMask);
             const float qs  = absmax > 0.0f ? absmax / 127.0f : 0.0f;
             const float inv = qs > 0.0f ? 1.0f / qs : 0.0f;
-            int8_kv_store_query_code(q_i8, row, d0, kv_cache_int8_quant_code(x0, inv));
-            int8_kv_store_query_code(q_i8, row, d1, kv_cache_int8_quant_code(x1, inv));
+            causal_store_query_code(q_i8, row, d0, kv_cache_int8_quant_code(x0, inv));
+            causal_store_query_code(q_i8, row, d1, kv_cache_int8_quant_code(x1, inv));
             if (lane == 0) { q_scale[row * Groups + grp] = qs; }
         }
     }
@@ -120,7 +121,7 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
             const int dc    = chunk - key_l * (D / 16);
             const int d     = dc * 16;
             const int key   = tile_k0 + key_l;
-            std::int8_t* kd = &k_i8[(key_l * DB16 + int8_kv_swizzle(key_l, dc * 8)) * 2];
+            std::int8_t* kd = &k_i8[(key_l * DB16 + causal_swizzle(key_l, dc * 8)) * 2];
             std::int8_t* vd = &v_i8[key_l * D + d];
             if (key <= max_query_abs) {
                 const std::int64_t off = kv_cache_int8_quant_code_index<Geometry>(
@@ -207,7 +208,7 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
                     const int acol = k * 16 + a_coloff;
                     ldmatrix_x4(af[kk][0], af[kk][1], af[kk][2], af[kk][3],
                                 smem_addr(&q_b16[(row_base + a_rowoff) * DB16 +
-                                                 int8_kv_swizzle(row_base + a_rowoff, acol)]));
+                                                 causal_swizzle(row_base + a_rowoff, acol)]));
                 }
 
 #pragma unroll
@@ -220,7 +221,7 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
                         const int bcol = k * 16 + b_koff;
                         unsigned bf[2];
                         ldmatrix_x2(bf[0], bf[1],
-                                    smem_addr(&k_b16[brow * DB16 + int8_kv_swizzle(brow, bcol)]));
+                                    smem_addr(&k_b16[brow * DB16 + causal_swizzle(brow, bcol)]));
                         mma_s8(c0, c1, c2, c3, af[kk][0], af[kk][1], af[kk][2], af[kk][3], bf[0],
                                bf[1]);
                     }
@@ -270,10 +271,10 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
             const float nm1_scaled = nm1 * scale_l2;
             const float alpha0     = running_m0 == -CUDART_INF_F
                                          ? 0.0f
-                                         : int8_kv_exp_scaled(running_m0, nm0_scaled, scale_l2);
+                                         : causal_exp_scaled(running_m0, nm0_scaled, scale_l2);
             const float alpha1     = running_m1 == -CUDART_INF_F
                                          ? 0.0f
-                                         : int8_kv_exp_scaled(running_m1, nm1_scaled, scale_l2);
+                                         : causal_exp_scaled(running_m1, nm1_scaled, scale_l2);
             float bl0              = 0.0f;
             float bl1              = 0.0f;
 #pragma unroll
@@ -281,23 +282,23 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
                 const int col0  = nt * 8 + 2 * lid;
                 const int col1  = col0 + 1;
                 const float p00 = score[nt][0] > -CUDART_INF_F
-                                      ? int8_kv_exp_scaled(score[nt][0], nm0_scaled, scale_l2)
+                                      ? causal_exp_scaled(score[nt][0], nm0_scaled, scale_l2)
                                       : 0.0f;
                 const float p01 = score[nt][1] > -CUDART_INF_F
-                                      ? int8_kv_exp_scaled(score[nt][1], nm0_scaled, scale_l2)
+                                      ? causal_exp_scaled(score[nt][1], nm0_scaled, scale_l2)
                                       : 0.0f;
                 const float p10 = score[nt][2] > -CUDART_INF_F
-                                      ? int8_kv_exp_scaled(score[nt][2], nm1_scaled, scale_l2)
+                                      ? causal_exp_scaled(score[nt][2], nm1_scaled, scale_l2)
                                       : 0.0f;
                 const float p11 = score[nt][3] > -CUDART_INF_F
-                                      ? int8_kv_exp_scaled(score[nt][3], nm1_scaled, scale_l2)
+                                      ? causal_exp_scaled(score[nt][3], nm1_scaled, scale_l2)
                                       : 0.0f;
                 bl0 += p00 + p01;
                 bl1 += p10 + p11;
-                p_s[row0 * Bc + int8_kv_probability_swizzle<Bc>(row0, col0)] = __float2half_rn(p00);
-                p_s[row0 * Bc + int8_kv_probability_swizzle<Bc>(row0, col1)] = __float2half_rn(p01);
-                p_s[row1 * Bc + int8_kv_probability_swizzle<Bc>(row1, col0)] = __float2half_rn(p10);
-                p_s[row1 * Bc + int8_kv_probability_swizzle<Bc>(row1, col1)] = __float2half_rn(p11);
+                p_s[row0 * Bc + causal_probability_swizzle<Bc>(row0, col0)] = __float2half_rn(p00);
+                p_s[row0 * Bc + causal_probability_swizzle<Bc>(row0, col1)] = __float2half_rn(p01);
+                p_s[row1 * Bc + causal_probability_swizzle<Bc>(row1, col0)] = __float2half_rn(p10);
+                p_s[row1 * Bc + causal_probability_swizzle<Bc>(row1, col1)] = __float2half_rn(p11);
             }
             bl0        = warp_sum<4>(bl0, FullMask);
             bl1        = warp_sum<4>(bl1, FullMask);
@@ -317,7 +318,7 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
                 const int dc    = chunk - key_l * (D / 8);
                 const int d     = dc * 8;
                 const int key   = k0 + key_l;
-                __half* dst     = &v_f16[key_l * D + int8_kv_swizzle(key_l, d)];
+                __half* dst     = &v_f16[key_l * D + causal_swizzle(key_l, d)];
                 if (key <= max_query_abs) {
                     const int grp = d >> 6;
                     __half vs     = __float2half_rn(0.0f);
@@ -351,10 +352,9 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
         for (int k = 0; k < PVKs; ++k) {
             unsigned pf[4];
             const int pcol = k * 16 + a_coloff;
-            ldmatrix_x4(
-                pf[0], pf[1], pf[2], pf[3],
-                smem_addr(&p_s[(row_base + a_rowoff) * Bc +
-                               int8_kv_probability_swizzle<Bc>(row_base + a_rowoff, pcol)]));
+            ldmatrix_x4(pf[0], pf[1], pf[2], pf[3],
+                        smem_addr(&p_s[(row_base + a_rowoff) * Bc +
+                                       causal_probability_swizzle<Bc>(row_base + a_rowoff, pcol)]));
 #pragma unroll
             for (int n = 0; n < PVNtPerWarp; ++n) {
                 const int global_n = d_slice * PVNtPerWarp + n;
@@ -362,7 +362,7 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
                 const int vrow = k * 16 + b_koff + b_rin;
                 const int vcol = global_n * 8;
                 ldmatrix_x2_t(vf[0], vf[1],
-                              smem_addr(&v_f16[vrow * D + int8_kv_swizzle(vrow, vcol)]));
+                              smem_addr(&v_f16[vrow * D + causal_swizzle(vrow, vcol)]));
                 mma_f16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[0], pf[1], pf[2], pf[3],
                         vf[0], vf[1]);
             }
@@ -390,15 +390,15 @@ __global__ __maxnreg__(Schedule::kMaxRegisters) void int8_kv_tiled_mma_kernel(
     for (int n = 0; n < PVNtPerWarp; ++n) {
         const int d0 = (d_slice * PVNtPerWarp + n) * 8 + 2 * lid;
         if (row0 < tile_rows) {
-            int8_kv_store_output_pair<Geometry>(out, q_head, d0, q0 + row0, acc[n][0] * inv_l0,
-                                                acc[n][1] * inv_l0);
+            causal_store_output_pair<Geometry>(out, q_head, d0, q0 + row0, acc[n][0] * inv_l0,
+                                               acc[n][1] * inv_l0);
         }
         if (row1 < tile_rows) {
-            int8_kv_store_output_pair<Geometry>(out, q_head, d0, q0 + row1, acc[n][2] * inv_l1,
-                                                acc[n][3] * inv_l1);
+            causal_store_output_pair<Geometry>(out, q_head, d0, q0 + row1, acc[n][2] * inv_l1,
+                                               acc[n][3] * inv_l1);
         }
     }
-    int8_kv_zero_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid, Schedule::kThreads);
+    causal_zero_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid, Schedule::kThreads);
 }
 
 } // namespace ninfer::ops::detail

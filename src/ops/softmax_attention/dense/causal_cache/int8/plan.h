@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ninfer/ops/softmax_attention.h"
-#include "ops/softmax_attention/dense/causal_cache/int8/split_policy.h"
+#include "ops/softmax_attention/common/causal_partition.h"
 
 namespace ninfer::ops::detail {
 
@@ -12,7 +12,7 @@ struct Int8KvCausalPlan {
     Int8KvFamily family;
     int query_heads, width, batch;
     CausalAttentionExecutionEnvelope envelope;
-    Int8KvPartition partition;
+    CausalKvPartition partition;
 };
 
 Int8KvCausalPlan make_int8_kv_causal_plan(int heads, int width, int batch,

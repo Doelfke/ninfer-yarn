@@ -1,8 +1,9 @@
 #pragma once
+#include "ops/softmax_attention/dense/causal_cache/nvfp4/tile_io.cuh"
 #include "ops/common/mbarrier.cuh"
 #include "ops/softmax_attention/dense/causal_cache/nvfp4/schedule.cuh"
-#include "ops/softmax_attention/dense/causal_cache/nvfp4/epilogue.cuh"
-#include "ops/softmax_attention/dense/causal_cache/nvfp4/softmax.cuh"
+#include "ops/softmax_attention/common/causal_epilogue.cuh"
+#include "ops/softmax_attention/common/causal_softmax.cuh"
 
 namespace ninfer::ops::detail {
 struct Nvfp4KvBarriers {
@@ -30,8 +31,8 @@ nvfp4_kv_decode_tile(__half* destination, const std::uint8_t* cache,
         const int group   = task - key_l * kKVCacheNvfp4Groups;
         const int d       = group * kKVCacheNvfp4Group;
         const int key     = tile_k0 + key_l;
-        __half* target_lo = destination + key_l * D + nvfp4_kv_swizzle(key_l, d);
-        __half* target_hi = destination + key_l * D + nvfp4_kv_swizzle(key_l, d + 8);
+        __half* target_lo = destination + key_l * D + causal_swizzle(key_l, d);
+        __half* target_hi = destination + key_l * D + causal_swizzle(key_l, d + 8);
         if (key <= max_query_abs) {
             const std::int64_t code_offset = kv_cache_nvfp4_code_index<Geometry>(
                 physical_page, kv_head, d, page_offset0 + key_l);
@@ -62,7 +63,7 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
     constexpr int QKKs          = D / 16;
     constexpr int PVNt          = D / 8;
     constexpr int PVKs          = Bc / 16;
-    constexpr float Log2E       = kNvfp4KvLog2E;
+    constexpr float Log2E       = kLog2E;
     constexpr unsigned FullMask = 0xffffffffU;
 
     extern __shared__ __align__(16) unsigned char smem_raw[];
@@ -81,7 +82,7 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
     const int tokens  = metadata.valid_tokens(width);
     if (q_head >= Geometry::QHeads || q0 >= width) return;
     if (q0 >= tokens) {
-        nvfp4_kv_zero_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid, Schedule::kThreads);
+        causal_zero_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid, Schedule::kThreads);
         return;
     }
 
@@ -105,14 +106,14 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
         for (int r = 0; r < 8; ++r) {
             const int d = lane + 32 * r;
             values[r]   = row < tile_rows
-                              ? __bfloat162float(q[nvfp4_kv_q_index<Geometry>(q_head, d, q0 + row)])
+                              ? __bfloat162float(q[causal_q_index<Geometry>(q_head, d, q0 + row)])
                               : 0.0F;
         }
         normalized_hadamard_d256_inplace(values, lane);
 #pragma unroll
         for (int r = 0; r < 8; ++r) {
-            const int d                               = lane + 32 * r;
-            q_f16[row * D + nvfp4_kv_swizzle(row, d)] = __float2half_rn(values[r]);
+            const int d                             = lane + 32 * r;
+            q_f16[row * D + causal_swizzle(row, d)] = __float2half_rn(values[r]);
         }
     }
     __syncthreads();
@@ -195,12 +196,12 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
         unsigned af[2][4];
         unsigned bf[2][QKNt][2];
         ldmatrix_x4(af[0][0], af[0][1], af[0][2], af[0][3],
-                    nvfp4_kv_swizzle_address(q_lane_base, 0U, q_as, q_r));
+                    causal_swizzle_address(q_lane_base, 0U, q_as, q_r));
 #pragma unroll
         for (int nt2 = 0; nt2 < QKNt; nt2 += 2) {
             ldmatrix_x4(bf[0][nt2][0], bf[0][nt2][1], bf[0][nt2 + 1][0], bf[0][nt2 + 1][1],
-                        nvfp4_kv_swizzle_address(k_lane_base + static_cast<unsigned>(nt2 * 4096),
-                                                 0U, k_as, k_r));
+                        causal_swizzle_address(k_lane_base + static_cast<unsigned>(nt2 * 4096), 0U,
+                                               k_as, k_r));
         }
 #pragma unroll
         for (int k = 0; k < QKKs; ++k) {
@@ -209,13 +210,13 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
             if (k + 1 < QKKs) {
                 const unsigned ck = static_cast<unsigned>((k + 1) << 5);
                 ldmatrix_x4(af[nxt][0], af[nxt][1], af[nxt][2], af[nxt][3],
-                            nvfp4_kv_swizzle_address(q_lane_base, ck, q_as, q_r));
+                            causal_swizzle_address(q_lane_base, ck, q_as, q_r));
 #pragma unroll
                 for (int nt2 = 0; nt2 < QKNt; nt2 += 2) {
                     ldmatrix_x4(
                         bf[nxt][nt2][0], bf[nxt][nt2][1], bf[nxt][nt2 + 1][0], bf[nxt][nt2 + 1][1],
-                        nvfp4_kv_swizzle_address(k_lane_base + static_cast<unsigned>(nt2 * 4096),
-                                                 ck, k_as, k_r));
+                        causal_swizzle_address(k_lane_base + static_cast<unsigned>(nt2 * 4096), ck,
+                                               k_as, k_r));
                 }
             }
 #pragma unroll
@@ -264,35 +265,35 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
         const float nm0_scaled = nm0 * scale_l2;
         const float nm1_scaled = nm1 * scale_l2;
         const float alpha0 =
-            m0 == -CUDART_INF_F ? 0.0F : nvfp4_kv_exp_scaled(m0, nm0_scaled, scale_l2);
+            m0 == -CUDART_INF_F ? 0.0F : causal_exp_scaled(m0, nm0_scaled, scale_l2);
         const float alpha1 =
-            m1 == -CUDART_INF_F ? 0.0F : nvfp4_kv_exp_scaled(m1, nm1_scaled, scale_l2);
+            m1 == -CUDART_INF_F ? 0.0F : causal_exp_scaled(m1, nm1_scaled, scale_l2);
         float bl0 = 0.0F;
         float bl1 = 0.0F;
         unsigned p_frag[PVKs][4];
 #pragma unroll
         for (int nt = 0; nt < QKNt; ++nt) {
             const float p00 = score[nt][0] > -CUDART_INF_F
-                                  ? nvfp4_kv_exp_scaled(score[nt][0], nm0_scaled, scale_l2)
+                                  ? causal_exp_scaled(score[nt][0], nm0_scaled, scale_l2)
                                   : 0.0F;
             const float p01 = score[nt][1] > -CUDART_INF_F
-                                  ? nvfp4_kv_exp_scaled(score[nt][1], nm0_scaled, scale_l2)
+                                  ? causal_exp_scaled(score[nt][1], nm0_scaled, scale_l2)
                                   : 0.0F;
             const float p10 = score[nt][2] > -CUDART_INF_F
-                                  ? nvfp4_kv_exp_scaled(score[nt][2], nm1_scaled, scale_l2)
+                                  ? causal_exp_scaled(score[nt][2], nm1_scaled, scale_l2)
                                   : 0.0F;
             const float p11 = score[nt][3] > -CUDART_INF_F
-                                  ? nvfp4_kv_exp_scaled(score[nt][3], nm1_scaled, scale_l2)
+                                  ? causal_exp_scaled(score[nt][3], nm1_scaled, scale_l2)
                                   : 0.0F;
             bl0 += p00 + p01;
             bl1 += p10 + p11;
             const int pk = nt >> 1;
             if ((nt & 1) == 0) {
-                p_frag[pk][0] = nvfp4_kv_pack_f16x2(p00, p01);
-                p_frag[pk][1] = nvfp4_kv_pack_f16x2(p10, p11);
+                p_frag[pk][0] = pack_f16x2(p00, p01);
+                p_frag[pk][1] = pack_f16x2(p10, p11);
             } else {
-                p_frag[pk][2] = nvfp4_kv_pack_f16x2(p00, p01);
-                p_frag[pk][3] = nvfp4_kv_pack_f16x2(p10, p11);
+                p_frag[pk][2] = pack_f16x2(p00, p01);
+                p_frag[pk][3] = pack_f16x2(p10, p11);
             }
         }
 
@@ -313,7 +314,7 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
         constexpr int PVLoads = PVKs * PVHalf;
         unsigned vf[2][4];
         ldmatrix_x4_t(vf[0][0], vf[0][1], vf[0][2], vf[0][3],
-                      nvfp4_kv_swizzle_address(v_lane_base, 0U, v_as, v_r));
+                      causal_swizzle_address(v_lane_base, 0U, v_as, v_r));
 #pragma unroll
         for (int li = 0; li < PVLoads; ++li) {
             const int k   = li / PVHalf;
@@ -325,8 +326,8 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
                 const int n2b      = ((li + 1) % PVHalf) * 2;
                 const unsigned ckv = static_cast<unsigned>(n2b << 4);
                 ldmatrix_x4_t(vf[nxt][0], vf[nxt][1], vf[nxt][2], vf[nxt][3],
-                              nvfp4_kv_swizzle_address(
-                                  v_lane_base + static_cast<unsigned>(k2 * 8192), ckv, v_as, v_r));
+                              causal_swizzle_address(v_lane_base + static_cast<unsigned>(k2 * 8192),
+                                                     ckv, v_as, v_r));
             }
             mma_f16(acc[n2][0], acc[n2][1], acc[n2][2], acc[n2][3], p_frag[k][0], p_frag[k][1],
                     p_frag[k][2], p_frag[k][3], vf[cur][0], vf[cur][1]);
@@ -359,10 +360,10 @@ __global__ __launch_bounds__(Schedule::kThreads, 1) void nvfp4_kv_tiled_mma_kern
     asm volatile("bar.sync 2, 128;" : : : "memory");
 
     for (int row = consumer_warp; row < tile_rows; row += Schedule::kConsumerWarps) {
-        nvfp4_kv_store_rotated_row<Geometry>(rotated_out + row * D, out, q_head, q0 + row);
+        causal_store_inverse_rotated_row<Geometry>(rotated_out + row * D, out, q_head, q0 + row);
     }
-    nvfp4_kv_zero_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), consumer_tid,
-                                 Schedule::kConsumerThreads);
+    causal_zero_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), consumer_tid,
+                               Schedule::kConsumerThreads);
 }
 
 } // namespace ninfer::ops::detail

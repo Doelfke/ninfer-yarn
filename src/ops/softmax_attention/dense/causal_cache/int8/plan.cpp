@@ -19,11 +19,11 @@ Int8KvCausalPlan make_int8_kv_causal_plan(int heads, int width, int batch,
     const int tiles =
         family == Int8KvFamily::ParallelGrouped ? (width + grouped_limit - 1) / grouped_limit : 1;
     const int independent_tiles = batch * (heads == 24 ? 4 : 2) * tiles;
-    constexpr int sms           = 170;
+    constexpr int sms           = kCausalAttentionSmCount;
     const int wave_ctas         = (sms / independent_tiles) * independent_tiles;
     const int budget = heads == 24 || width <= 4 || wave_ctas < sms * 9 / 10 ? 2 * sms : sms;
-    Int8KvPartition partition{
-        1, std::clamp(budget / independent_tiles, 1, Int8KvPartition::kMaxSplits)};
+    CausalKvPartition partition{
+        1, std::clamp(budget / independent_tiles, 1, CausalKvPartition::kMaxSplits)};
     // Bound partial traffic by keeping enough KV work in each split.
     partition.key_shift = (width == 1 ? 7 : 8) - (heads == 16 ? 1 : 0);
     partition.capacity  = partition.active(envelope.max_visible_keys);
@@ -38,7 +38,7 @@ std::size_t int8_kv_workspace_bytes(int heads, int batch, int min_width, int max
         if (plan.family == Int8KvFamily::Tiled) continue;
         const int splits = plan.partition.capacity;
         WorkspaceLayoutBuilder layout;
-        (void)int8_kv_allocate_partials(layout, heads, width, splits, batch);
+        (void)allocate_causal_partials(layout, heads, width, splits, batch);
         maximum = std::max(maximum, layout.peak_bytes(1));
     }
     return maximum;

@@ -3,31 +3,21 @@
 #include "core/device.h"
 #include "ops/softmax_attention/dense/causal_cache/fp8/grouped_mma.cuh"
 #include "ops/softmax_attention/dense/causal_cache/fp8/tiled_mma.cuh"
-#include "ops/softmax_attention/dense/causal_cache/fp8/merge.cuh"
+#include "ops/softmax_attention/common/causal_merge.cuh"
 #include <stdexcept>
 
 namespace ninfer::ops::detail {
 
-template <class G, bool Writable>
-void validate_fp8_kv_operands(const Fp8KvOperands& p, Fp8KvCacheView<Writable> cache) {
-    if (p.query_heads != G::QHeads || cache.kv_heads != G::KVHeads || !p.q || !p.positions ||
-        !p.out || !cache.keys || !cache.values || !cache.key_scales || !cache.value_scales ||
-        !cache.tables || p.width < 1 || p.batch < 1 || p.visible_capacity < 1 ||
-        static_cast<std::int64_t>(p.visible_capacity) >
-            static_cast<std::int64_t>(cache.table_stride) * kPagedKVPageSize)
-        throw std::invalid_argument("FP8 attention template: invalid operands");
-}
-
 template <class G, class S, bool MultiBatch, bool Masked, bool Writable, class Input,
           bool ParallelQueries = false>
-void launch_fp8_kv_grouped_mma(const Fp8KvOperands& p, Fp8KvCacheView<Writable> cache, Input input,
-                               Fp8KvPartition partition, Fp8KvPartialView partial,
+void launch_fp8_kv_grouped_mma(const CausalAttentionOperands& p, Fp8KvCacheView<Writable> cache,
+                               Input input, CausalKvPartition partition, CausalPartialView partial,
                                cudaStream_t stream) {
     static_assert(Writable == Input::writes_cache);
-    validate_fp8_kv_operands<G>(p, cache);
+    validate_quantized_causal_operands<G>(p, cache);
     if ((!ParallelQueries && p.width != S::kTokenTile) || MultiBatch != (p.batch > 1) ||
         Masked != (cache.valid_columns != nullptr) || partition.capacity < 1 ||
-        partition.target > Fp8KvPartition::kMaxSplits || partition.target < 1 ||
+        partition.target > CausalKvPartition::kMaxSplits || partition.target < 1 ||
         partition.key_shift < 6 || partition.key_shift > 12 ||
         partition.capacity != partition.active(p.visible_capacity) || !partial.acc ||
         !partial.maximum || !partial.sum)
@@ -51,19 +41,10 @@ void launch_fp8_kv_grouped_mma(const Fp8KvOperands& p, Fp8KvCacheView<Writable> 
     CUDA_CHECK(cudaGetLastError());
 }
 
-template <class G, class S, bool MultiBatch, bool Masked, bool Writable>
-void launch_fp8_kv_merge(const Fp8KvOperands& p, Fp8KvCacheView<Writable> cache,
-                         Fp8KvPartition partition, Fp8KvPartialView partial, cudaStream_t stream) {
-    const dim3 grid(G::QHeads, div_up(G::kHeadDim, S::kDChunk), p.width * p.batch);
-    fp8_kv_merge_kernel<G, S, MultiBatch, Masked>
-        <<<grid, S::kThreads, 0, stream>>>(partial.acc, partial.maximum, partial.sum, p.positions,
-                                           cache.valid_columns, p.width, p.batch, partition, p.out);
-    CUDA_CHECK(cudaGetLastError());
-}
-
 template <class G, class S>
-void launch_fp8_kv_tiled_mma(const Fp8KvOperands& p, Fp8KvReadView cache, cudaStream_t stream) {
-    validate_fp8_kv_operands<G>(p, cache);
+void launch_fp8_kv_tiled_mma(const CausalAttentionOperands& p, Fp8KvReadView cache,
+                             cudaStream_t stream) {
+    validate_quantized_causal_operands<G>(p, cache);
     if (p.batch != 1)
         throw std::invalid_argument("FP8 tiled attention requires a complete single query row");
     const auto invoke = [&]<class Metadata>(Metadata metadata) {

@@ -1,9 +1,10 @@
 #pragma once
+#include "ops/softmax_attention/dense/causal_cache/fp8/tile_io.cuh"
 
 #include "ops/softmax_attention/dense/causal_cache/fp8/schedule.cuh"
-#include "ops/softmax_attention/dense/causal_cache/fp8/split_policy.h"
-#include "ops/softmax_attention/dense/causal_cache/fp8/epilogue.cuh"
-#include "ops/softmax_attention/dense/causal_cache/fp8/softmax.cuh"
+#include "ops/softmax_attention/common/causal_partition.h"
+#include "ops/softmax_attention/common/causal_epilogue.cuh"
+#include "ops/softmax_attention/common/causal_softmax.cuh"
 #include "ops/kv_cache/hadamard_d256.cuh"
 
 namespace ninfer::ops::detail {
@@ -15,11 +16,11 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
         const __nv_bfloat16* q, CacheInput input, const std::int32_t* positions,
         typename Fp8KvCacheView<CacheInput::writes_cache>::Code* cache_k,
         typename Fp8KvCacheView<CacheInput::writes_cache>::Code* cache_v,
-        typename Fp8KvCacheView<CacheInput::writes_cache>::Scale* cache_k_scale,
-        typename Fp8KvCacheView<CacheInput::writes_cache>::Scale* cache_v_scale,
+        typename Fp8KvCacheView<CacheInput::writes_cache>::KeyScale* cache_k_scale,
+        typename Fp8KvCacheView<CacheInput::writes_cache>::ValueScale* cache_v_scale,
         const std::int32_t* block_tables, const std::int32_t* valid_columns,
         const std::int32_t* table_rows, std::int32_t table_stride, std::int32_t full_width,
-        std::int32_t logical_capacity, Fp8KvPartition partition, float attention_scale,
+        std::int32_t logical_capacity, CausalKvPartition partition, float attention_scale,
         float* partial_acc, float* partial_m, float* partial_l) {
     constexpr int TokenTile = Schedule::kTokenTile, WarpsPerCta = Schedule::kWarps;
     constexpr int KeyBlock             = Schedule::kKeyRows;
@@ -186,14 +187,14 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
     for (int row = warp; row < RowCount; row += Wc) {
         int q_head = 0;
         int token  = 0;
-        fp8_kv_row_to_qt<Geometry>(row, kv_head, q_head, token);
+        causal_row_to_qt<Geometry>(row, kv_head, q_head, token);
         float values[8];
         float local_absmax = 0.0F;
 #pragma unroll
         for (int r = 0; r < 8; ++r) {
             const int d = lane + 32 * r;
             values[r]   = token < valid_tokens
-                              ? __bfloat162float(q[fp8_kv_q_index<Geometry>(q_head, d, token)])
+                              ? __bfloat162float(q[causal_q_index<Geometry>(q_head, d, token)])
                               : 0.0F;
         }
         normalized_hadamard_d256_inplace(values, lane);
@@ -205,7 +206,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
 #pragma unroll
         for (int r = 0; r < 8; ++r) {
             const int d = lane + 32 * r;
-            fp8_kv_store_query_code(q_s, row, d, kv_cache_fp8_quant_code(values[r], inv));
+            causal_store_query_code(q_s, row, d, kv_cache_fp8_quant_code(values[r], inv));
         }
         if (lane == 0) q_scale_tmp[row] = qs;
     }
@@ -275,7 +276,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
             const int dc        = chunk - key_l * (D / 16);
             const int d         = dc * 16;
             const int key       = tile_k0 + key_l;
-            std::uint8_t* k_dst = &k_fp8[(key_l * DB16 + fp8_kv_swizzle(key_l, dc * 8)) * 2];
+            std::uint8_t* k_dst = &k_fp8[(key_l * DB16 + causal_swizzle(key_l, dc * 8)) * 2];
             if (key >= split_start && key < split_end) {
                 const std::int64_t code_offset = kv_cache_fp8_code_index<Geometry>(
                     physical_page, kv_head, d, key & kPagedKVPageMask);
@@ -312,14 +313,14 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
                     unsigned af[4];
                     ldmatrix_x4(af[0], af[1], af[2], af[3],
                                 smem_addr(&q_b16[(row_base + a_rowoff) * DB16 +
-                                                 fp8_kv_swizzle(row_base + a_rowoff, acol)]));
+                                                 causal_swizzle(row_base + a_rowoff, acol)]));
 #pragma unroll
                     for (int nt = 0; nt < QKNt; ++nt) {
                         const int brow = nt * 8 + b_rin;
                         const int bcol = kk * 16 + b_koff;
                         unsigned bf[2];
                         ldmatrix_x2(bf[0], bf[1],
-                                    smem_addr(&k_b16[brow * DB16 + fp8_kv_swizzle(brow, bcol)]));
+                                    smem_addr(&k_b16[brow * DB16 + causal_swizzle(brow, bcol)]));
                         mma_fp8_e4m3(score[nt][0], score[nt][1], score[nt][2], score[nt][3], af[0],
                                      af[1], af[2], af[3], bf[0], bf[1]);
                     }
@@ -341,8 +342,8 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
                 const int row0 = row_base + gid;
                 const int row1 = row0 + 8;
                 int q_head0 = 0, token0 = 0, q_head1 = 0, token1 = 0;
-                fp8_kv_row_to_qt<Geometry>(row0, kv_head, q_head0, token0);
-                fp8_kv_row_to_qt<Geometry>(row1, kv_head, q_head1, token1);
+                causal_row_to_qt<Geometry>(row0, kv_head, q_head0, token0);
+                causal_row_to_qt<Geometry>(row1, kv_head, q_head1, token1);
                 const int qabs0 = row0 < RowCount && token0 < valid_tokens ? positions[token0] : -1;
                 const int qabs1 = row1 < RowCount && token1 < valid_tokens ? positions[token1] : -1;
                 float bm0       = -CUDART_INF_F;
@@ -376,32 +377,32 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
                 const float nm0 = fmaxf(m0, bm0);
                 const float nm1 = fmaxf(m1, bm1);
                 const float alpha0 =
-                    m0 == -CUDART_INF_F ? 0.0F : fp8_kv_exp_difference(m0, nm0, kFp8KvLog2E);
+                    m0 == -CUDART_INF_F ? 0.0F : causal_exp_difference(m0, nm0, kLog2E);
                 const float alpha1 =
-                    m1 == -CUDART_INF_F ? 0.0F : fp8_kv_exp_difference(m1, nm1, kFp8KvLog2E);
+                    m1 == -CUDART_INF_F ? 0.0F : causal_exp_difference(m1, nm1, kLog2E);
                 float bl0 = 0.0F;
                 float bl1 = 0.0F;
 #pragma unroll
                 for (int nt = 0; nt < QKNt; ++nt) {
                     const int col0  = nt * 8 + 2 * lid;
                     const float p00 = nm0 > -CUDART_INF_F && score[nt][0] > -CUDART_INF_F
-                                          ? fp8_kv_exp_difference(score[nt][0], nm0, kFp8KvLog2E)
+                                          ? causal_exp_difference(score[nt][0], nm0, kLog2E)
                                           : 0.0F;
                     const float p01 = nm0 > -CUDART_INF_F && score[nt][1] > -CUDART_INF_F
-                                          ? fp8_kv_exp_difference(score[nt][1], nm0, kFp8KvLog2E)
+                                          ? causal_exp_difference(score[nt][1], nm0, kLog2E)
                                           : 0.0F;
                     const float p10 = nm1 > -CUDART_INF_F && score[nt][2] > -CUDART_INF_F
-                                          ? fp8_kv_exp_difference(score[nt][2], nm1, kFp8KvLog2E)
+                                          ? causal_exp_difference(score[nt][2], nm1, kLog2E)
                                           : 0.0F;
                     const float p11 = nm1 > -CUDART_INF_F && score[nt][3] > -CUDART_INF_F
-                                          ? fp8_kv_exp_difference(score[nt][3], nm1, kFp8KvLog2E)
+                                          ? causal_exp_difference(score[nt][3], nm1, kLog2E)
                                           : 0.0F;
                     bl0 += p00 + p01;
                     bl1 += p10 + p11;
-                    *reinterpret_cast<__half2*>(&p_sw[gid * PStride + fp8_kv_swizzle(gid, col0)]) =
+                    *reinterpret_cast<__half2*>(&p_sw[gid * PStride + causal_swizzle(gid, col0)]) =
                         __floats2half2_rn(p00, p01);
                     *reinterpret_cast<__half2*>(
-                        &p_sw[(gid + 8) * PStride + fp8_kv_swizzle(gid + 8, col0)]) =
+                        &p_sw[(gid + 8) * PStride + causal_swizzle(gid + 8, col0)]) =
                         __floats2half2_rn(p10, p11);
                 }
                 bl0 = warp_sum<4>(bl0, FullMask);
@@ -423,7 +424,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
                 const int dc    = chunk - key_l * (D / 8);
                 const int d     = dc * 8;
                 const int key   = k0 + key_l;
-                __half* dst     = &v_f16[key_l * D + fp8_kv_swizzle(key_l, d)];
+                __half* dst     = &v_f16[key_l * D + causal_swizzle(key_l, d)];
                 if (key >= split_start && key < split_end) {
                     store_vec(dst, fp8_kv_dequant_f16x8(&v_fp8[key_l * D + d], v_scale_s[key_l]));
                 } else {
@@ -466,12 +467,12 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
                     ldmatrix_x4(
                         pf[0], pf[1], pf[2], pf[3],
                         smem_addr(
-                            &p_consumer[a_rowoff * PStride + fp8_kv_swizzle(a_rowoff, pcol)]));
+                            &p_consumer[a_rowoff * PStride + causal_swizzle(a_rowoff, pcol)]));
                     unsigned vf[2];
                     const int vrow = k * 16 + b_koff + b_rin;
                     const int vcol = global_n * 8;
                     ldmatrix_x2_t(vf[0], vf[1],
-                                  smem_addr(&v_f16[vrow * D + fp8_kv_swizzle(vrow, vcol)]));
+                                  smem_addr(&v_f16[vrow * D + causal_swizzle(vrow, vcol)]));
                     mma_f16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[0], pf[1], pf[2], pf[3],
                             vf[0], vf[1]);
                 }
@@ -487,19 +488,19 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
         if (row0 < tile_tokens * Geometry::GroupSize) {
             int q_head = 0;
             int token  = 0;
-            fp8_kv_row_to_qt<Geometry>(row0, kv_head, q_head, token);
-            partial_m[fp8_kv_stat_index<Geometry>(q_head, partial_begin + token, split,
+            causal_row_to_qt<Geometry>(row0, kv_head, q_head, token);
+            partial_m[causal_stat_index<Geometry>(q_head, partial_begin + token, split,
                                                   partial_width)] = m0;
-            partial_l[fp8_kv_stat_index<Geometry>(q_head, partial_begin + token, split,
+            partial_l[causal_stat_index<Geometry>(q_head, partial_begin + token, split,
                                                   partial_width)] = l0;
         }
         if (row1 < tile_tokens * Geometry::GroupSize) {
             int q_head = 0;
             int token  = 0;
-            fp8_kv_row_to_qt<Geometry>(row1, kv_head, q_head, token);
-            partial_m[fp8_kv_stat_index<Geometry>(q_head, partial_begin + token, split,
+            causal_row_to_qt<Geometry>(row1, kv_head, q_head, token);
+            partial_m[causal_stat_index<Geometry>(q_head, partial_begin + token, split,
                                                   partial_width)] = m1;
-            partial_l[fp8_kv_stat_index<Geometry>(q_head, partial_begin + token, split,
+            partial_l[causal_stat_index<Geometry>(q_head, partial_begin + token, split,
                                                   partial_width)] = l1;
         }
     }
@@ -515,18 +516,18 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
         if (row0 < tile_tokens * Geometry::GroupSize) {
             int q_head = 0;
             int token  = 0;
-            fp8_kv_row_to_qt<Geometry>(row0, kv_head, q_head, token);
-            const auto dst = fp8_kv_partial_index<Geometry>(q_head, d0, partial_begin + token,
+            causal_row_to_qt<Geometry>(row0, kv_head, q_head, token);
+            const auto dst = causal_partial_index<Geometry>(q_head, d0, partial_begin + token,
                                                             split, partial_width);
-            fp8_kv_store_partial_pair(partial_acc + dst, acc[n][0], acc[n][1]);
+            causal_store_partial_pair(partial_acc + dst, acc[n][0], acc[n][1]);
         }
         if (row1 < tile_tokens * Geometry::GroupSize) {
             int q_head = 0;
             int token  = 0;
-            fp8_kv_row_to_qt<Geometry>(row1, kv_head, q_head, token);
-            const auto dst = fp8_kv_partial_index<Geometry>(q_head, d0, partial_begin + token,
+            causal_row_to_qt<Geometry>(row1, kv_head, q_head, token);
+            const auto dst = causal_partial_index<Geometry>(q_head, d0, partial_begin + token,
                                                             split, partial_width);
-            fp8_kv_store_partial_pair(partial_acc + dst, acc[n][2], acc[n][3]);
+            causal_store_partial_pair(partial_acc + dst, acc[n][2], acc[n][3]);
         }
     }
 }

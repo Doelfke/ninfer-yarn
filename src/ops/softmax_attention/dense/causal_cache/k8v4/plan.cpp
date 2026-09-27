@@ -23,11 +23,11 @@ K8V4KvCausalPlan make_k8v4_kv_causal_plan(int heads, int width, int batch,
     const int independent_tiles = batch * (heads == 24 ? 4 : 2) * tiles;
     // Decode permits two resident CTAs per SM. Spec uses one; add a wave when
     // rounding to complete query tiles would leave over 10% of the 170 SMs idle.
-    constexpr int sms   = 170;
+    constexpr int sms   = kCausalAttentionSmCount;
     const int wave_ctas = (sms / independent_tiles) * independent_tiles;
     const int budget    = width == 1 || wave_ctas < sms * 9 / 10 ? 2 * sms : sms;
-    K8V4KvPartition partition{
-        1, std::clamp(budget / independent_tiles, 1, K8V4KvPartition::kMaxSplits)};
+    CausalKvPartition partition{
+        1, std::clamp(budget / independent_tiles, 1, CausalKvPartition::kMaxSplits)};
     // Bound partial traffic by keeping enough KV work in each split.
     partition.key_shift = (width == 1 ? 7 : 8) - (heads == 16 ? 1 : 0);
     partition.capacity  = partition.active(envelope.max_visible_keys);
@@ -42,7 +42,7 @@ std::size_t k8v4_kv_workspace_bytes(int heads, int batch, int min_width, int max
         if (plan.family == K8V4KvFamily::Tiled) continue;
         const int splits = plan.partition.capacity;
         WorkspaceLayoutBuilder layout;
-        (void)k8v4_kv_allocate_partials(layout, heads, width, splits, batch);
+        (void)allocate_causal_partials(layout, heads, width, splits, batch);
         maximum = std::max(maximum, layout.peak_bytes(1));
     }
     return maximum;
