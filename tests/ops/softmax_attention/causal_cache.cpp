@@ -1730,7 +1730,8 @@ std::vector<T> select_query_columns(const std::vector<T>& values, std::size_t st
 }
 
 int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const AttentionCase& test_case,
-                MappingPattern mapping, std::span<const int> oracle_queries = {}) {
+                MappingPattern mapping, std::span<const int> oracle_queries = {},
+                std::span<const std::uint32_t> graph_limits = {}) {
     const std::int32_t total       = test_case.base + test_case.tokens;
     const std::int32_t max_context = static_cast<std::int32_t>(
         std::max<std::uint32_t>(static_cast<std::uint32_t>(total + 3), test_case.envelope_max));
@@ -1749,8 +1750,8 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     for (std::int32_t token = 0; token < test_case.tokens; ++token) {
         positions[static_cast<std::size_t>(token)] = test_case.base + token;
     }
-    const ops::CausalAttentionExecutionEnvelope envelope{static_cast<std::uint32_t>(total),
-                                                         test_case.envelope_max};
+    ops::CausalAttentionExecutionEnvelope envelope{static_cast<std::uint32_t>(total),
+                                                   test_case.envelope_max};
 
     const HostCache initial = make_cache(geometry, storage, max_context, test_case.seed + 10u);
     HostCache expected      = initial;
@@ -1789,19 +1790,46 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     GuardedDeviceBuffer workspace_buffer(std::max<std::size_t>(workspace_bytes, 256));
     WorkspaceArena workspace(DeviceSpan{workspace_buffer.data(), workspace_buffer.bytes()});
 
-    launch_attention_case(
-        [&](cudaStream_t stream) {
-            ops::causal_softmax_attention(tq, tk, tv, tp, Tensor{}, ttable_row,
-                                          op_geometry(geometry), kAttentionScale,
-                                          cache.batch_view(), envelope, workspace, tout, stream);
-        },
-        test_case.graph_replay);
+    int graph_failures = 0;
+    const auto launch  = [&](cudaStream_t stream) {
+        ops::causal_softmax_attention(tq, tk, tv, tp, Tensor{}, ttable_row, op_geometry(geometry),
+                                       kAttentionScale, cache.batch_view(), envelope, workspace,
+                                       tout, stream);
+    };
+    if (graph_limits.empty()) {
+        launch_attention_case(launch, test_case.graph_replay);
+    } else {
+        DeviceContext device(0);
+        DecodeGraphExecutable executable;
+        for (const auto limit : graph_limits) {
+            envelope.max_visible_keys = limit;
+            launch(device.stream);
+            cuda_synchronize();
+            DecodeGraphDefinition definition;
+            definition.capture(device.stream, [&] { launch(device.stream); });
+            if (executable.ready())
+                executable.update(definition);
+            else
+                executable.instantiate(definition);
+            dout.copy_from_host(output_canary.data(), output_canary.size() * sizeof(std::uint16_t));
+            cuda_synchronize();
+            executable.launch(device.stream);
+            cuda_synchronize();
+            const auto actual = copy_from_guarded<std::uint16_t>(dout, q_bits.size());
+            graph_failures +=
+                verify_attention("BF16 attention envelope update",
+                                 bf16_bits_to_double(select_query_columns(
+                                     actual, kHeadDim * geometry.q_heads, oracle_queries)),
+                                 reference, attention_criterion(storage));
+        }
+    }
 
     const std::string label =
         case_label("causal_softmax_attention", geometry, storage, test_case, mapping);
     const std::vector<std::uint16_t> output_bits =
         copy_from_guarded<std::uint16_t>(dout, q_bits.size());
-    int failures = verify_attention(label,
+    int failures = graph_failures +
+                   verify_attention(label,
                                     bf16_bits_to_double(select_query_columns(
                                         output_bits, kHeadDim * geometry.q_heads, oracle_queries)),
                                     reference, attention_criterion(storage));
@@ -1951,7 +1979,7 @@ int verify_invalid_columns_zero(const std::string& label, std::span<const std::u
 }
 
 int run_batch_case(const Geometry& geometry, KvCacheStorage storage,
-                   const BatchAttentionCase& test_case) {
+                   const BatchAttentionCase& test_case, int envelope_max = 0) {
     const int batch = test_case.contexts.size(), width = test_case.width;
     const int pool_rows = std::max(
         batch, *std::max_element(test_case.table_rows.begin(), test_case.table_rows.end()) + 1);
@@ -1960,8 +1988,9 @@ int run_batch_case(const Geometry& geometry, KvCacheStorage storage,
         maximum_visible = std::max(
             maximum_visible,
             test_case.contexts[b] + (test_case.graph_replay ? width : test_case.valid_columns[b]));
-    const ops::CausalAttentionExecutionEnvelope envelope{static_cast<unsigned>(maximum_visible),
-                                                         static_cast<unsigned>(maximum_visible)};
+    const ops::CausalAttentionExecutionEnvelope envelope{
+        static_cast<unsigned>(maximum_visible),
+        static_cast<unsigned>(std::max(maximum_visible, envelope_max))};
     const std::size_t q_column_elements  = std::size_t(kHeadDim) * geometry.q_heads,
                       kv_column_elements = std::size_t(kHeadDim) * geometry.kv_heads;
     const std::size_t columns            = std::size_t(width) * batch;
@@ -1971,8 +2000,8 @@ int run_batch_case(const Geometry& geometry, KvCacheStorage storage,
     inject_codec_edges(geometry, columns, k, v);
     std::vector<HostCache> initial;
     for (int row = 0; row < pool_rows; ++row)
-        initial.push_back(
-            make_cache(geometry, storage, maximum_visible + 3, test_case.seed + 20u + 3u * row));
+        initial.push_back(make_cache(geometry, storage, envelope.max_visible_keys + 3,
+                                     test_case.seed + 20u + 3u * row));
     auto expected = initial;
     BatchDeviceCache cache(initial, test_case.mapping);
     std::optional<BatchDeviceCache> control;
@@ -2305,6 +2334,26 @@ int run_geometry(const Geometry& geometry) {
     return failures;
 }
 
+// A grouped BF16 call keeps one update-compatible two-stage execution across
+// short and long envelopes. Verify each replay against the independent oracle.
+int run_bf16_graph_envelope_cases() {
+    int failures = 0;
+    constexpr std::array<std::uint32_t, 5> short_limits{64, 128, 2048, 64, 2048};
+    constexpr std::array<std::uint32_t, 4> long_limits{32769, 65536, 131072, 32769};
+    for (const auto& geometry : kGeometries) {
+        for (int width : {1, 4, 16})
+            failures += run_a1_case(geometry, KvCacheStorage::BFloat16, {width, 17, 2048, 965u},
+                                    MappingPattern::Fragmented, {}, short_limits);
+        failures += run_a1_case(geometry, KvCacheStorage::BFloat16, {1, 32768, 131072, 966u},
+                                MappingPattern::Fragmented, {}, long_limits);
+        failures += run_batch_case(
+            geometry, KvCacheStorage::BFloat16,
+            {4, {32764, 8190, 127}, {4, 2, 0}, {2, 0, 1}, MappingPattern::Fragmented, 967u, true},
+            65536);
+    }
+    return failures;
+}
+
 int run_fp8_cases() {
     int failures = 0;
     for (const Geometry& geometry : kGeometries) {
@@ -2511,6 +2560,7 @@ int run_softmax_attention_causal_cache_tests() {
     failures += report_quantization_quality(KvCacheStorage::Fp8KeyNvfp4Value, 819u);
     for (const Geometry& geometry : kGeometries) { failures += run_geometry(geometry); }
     failures += run_fp8_cases();
+    failures += run_bf16_graph_envelope_cases();
     failures += run_batch_cases();
     const std::array<int, 7> prefill_queries{0, 63, 64, 127, 128, 511, 1023};
     for (const auto& geometry : kGeometries)
