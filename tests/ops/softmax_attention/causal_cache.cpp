@@ -2587,6 +2587,8 @@ int run_softmax_attention_causal_cache_tests() {
     failures += run_graph_envelope_cases(KvCacheStorage::BFloat16);
     failures += run_graph_envelope_cases(KvCacheStorage::Fp8E4M3Row256);
     failures += run_graph_envelope_cases(KvCacheStorage::Int8Group64);
+    failures += run_graph_envelope_cases(KvCacheStorage::Nvfp4Group16);
+    failures += run_quantized_causal_cases(KvCacheStorage::Nvfp4Group16);
     failures += run_quantized_causal_cases(KvCacheStorage::Int8Group64);
     failures += run_batch_cases();
     const std::array<int, 7> prefill_queries{0, 63, 64, 127, 128, 511, 1023};

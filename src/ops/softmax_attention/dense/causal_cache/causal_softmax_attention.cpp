@@ -10,6 +10,8 @@
 #include "ops/softmax_attention/dense/causal_cache/fp8/launch.h"
 #include "ops/softmax_attention/dense/causal_cache/int8/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/int8/launch.h"
+#include "ops/softmax_attention/dense/causal_cache/nvfp4/plan.h"
+#include "ops/softmax_attention/dense/causal_cache/nvfp4/launch.h"
 
 #include <algorithm>
 #include <cmath>
@@ -338,25 +340,11 @@ namespace detail {
 CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::int32_t width,
                                                     std::int32_t batch_size, KvCacheStorage storage,
                                                     CausalAttentionExecutionEnvelope envelope) {
-    if (storage == KvCacheStorage::BFloat16 || storage == KvCacheStorage::Fp8E4M3Row256 ||
-        storage == KvCacheStorage::Int8Group64)
+    if (storage != KvCacheStorage::Fp8KeyNvfp4Value)
         throw std::logic_error("this attention storage owns its plan");
     if (q_heads == 24 && width <= kMaximumVerifyTokens) {
         if (batch_size == 1) {
-            std::uint32_t prompt_limit = 0;
-            switch (storage) {
-            case KvCacheStorage::BFloat16:
-            case KvCacheStorage::Int8Group64:
-                throw std::logic_error("this attention storage owns its plan");
-            case KvCacheStorage::Fp8E4M3Row256:
-                throw std::logic_error("FP8 attention owns its plan");
-            case KvCacheStorage::Nvfp4Group16:
-                prompt_limit = width <= 8 ? 0 : 256;
-                break;
-            case KvCacheStorage::Fp8KeyNvfp4Value:
-                prompt_limit = width <= 4 ? 0 : width <= 8 ? 128 : 320;
-                break;
-            }
+            const std::uint32_t prompt_limit = width <= 4 ? 0 : width <= 8 ? 128 : 320;
             if (envelope.max_visible_keys <= prompt_limit) return CausalAttentionRoute::Prompt;
         }
         return width <= 8 ? CausalAttentionRoute::SmallT : CausalAttentionRoute::ChunkedSmallT;
@@ -411,6 +399,9 @@ std::size_t causal_softmax_attention_workspace_capacity_bytes(
 
     if (cache_storage == KvCacheStorage::Int8Group64)
         return detail::int8_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
+
+    if (cache_storage == KvCacheStorage::Nvfp4Group16)
+        return detail::nvfp4_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
 
     const auto chunk_capacity = [&](std::int32_t width) {
         const std::int32_t splits = detail::causal_attention_split_capacity(
@@ -482,6 +473,12 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
         return;
     }
 
+    if (cache.storage == KvCacheStorage::Nvfp4Group16) {
+        detail::nvfp4_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale,
+                                         cache, envelope, workspace, out, stream);
+        return;
+    }
+
     auto scope = workspace.scope();
     const detail::CausalAttentionRoute route =
         detail::causal_attention_resolve_route(q.ne[1], width, batch, cache.storage, envelope);
@@ -526,6 +523,12 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
 
     if (cache.storage == KvCacheStorage::Int8Group64) {
         detail::int8_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
+                                         stream);
+        return;
+    }
+
+    if (cache.storage == KvCacheStorage::Nvfp4Group16) {
+        detail::nvfp4_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
                                          stream);
         return;
     }

@@ -7,10 +7,10 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/int8/launch.cu"
   "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/int8/plan.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/small_t.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/small_t_nvfp4.cu"
   "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/small_t_k8v4.cu"
   "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt_nvfp4.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/nvfp4/launch.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/nvfp4/plan.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt_k8v4.cu"
   "${CMAKE_CURRENT_LIST_DIR}/dense/packed/packed_softmax_attention.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/dense/packed/launch.cu"
@@ -21,5 +21,5 @@ target_sources(ninfer_ops PRIVATE
 )
 
 target_sources(ninfer_nvfp4_non_rdc PRIVATE
-  "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/prompt_nvfp4_non_rdc.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/dense/causal_cache/nvfp4/tiled_launch.cu"
 )

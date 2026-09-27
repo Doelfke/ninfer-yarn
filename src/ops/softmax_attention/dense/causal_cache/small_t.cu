@@ -88,9 +88,7 @@ std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t 
         if (batch_size > 1) {
             // Keep complete grids within one or two 170-SM waves. Rounding from 160 CTAs
             // leaves room for the indivisible 4*B group, including B=3/5/6/7.
-            const bool narrow = tokens <= 5;
-            int target_ctas   = 160;
-            if (cache_storage == KvCacheStorage::Nvfp4Group16) target_ctas = narrow ? 320 : 160;
+            constexpr int target_ctas = 160;
             const int grid_limit = div_up(target_ctas, 4 * batch_size);
             // A split stages at most 64 physical-page IDs. Leave two 64-key pages for
             // key-tile rounding and page alignment at the 262144-key resource limit.
@@ -117,12 +115,6 @@ void causal_attention_small_t_launch(
                                              partial_l, out, stream);
         return;
     }
-    if (cache.storage == KvCacheStorage::Nvfp4Group16) {
-        causal_attention_small_t_nvfp4_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
-                                              envelope, column_begin, width, partial_acc, partial_m,
-                                              partial_l, out, stream);
-        return;
-    }
     throw std::invalid_argument("unsupported legacy attention storage");
 }
 
@@ -134,11 +126,6 @@ void causal_attention_cached_small_t_launch(const Tensor& q, const Tensor& pos, 
     if (cache.storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         causal_attention_cached_small_t_k8v4_launch(q, pos, scale, cache, envelope, partial_acc,
                                                     partial_m, partial_l, out, stream);
-        return;
-    }
-    if (cache.storage == KvCacheStorage::Nvfp4Group16) {
-        causal_attention_cached_small_t_nvfp4_launch(q, pos, scale, cache, envelope, partial_acc,
-                                                     partial_m, partial_l, out, stream);
         return;
     }
     throw std::invalid_argument("unsupported legacy attention storage");
