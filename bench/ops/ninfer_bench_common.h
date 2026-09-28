@@ -11,6 +11,7 @@
 // a same-topology payload control, and only the profiler evidence needed for the
 // concrete kernel question.
 
+#include "../common/fixture_data.cuh"
 #include "core/arena.h"
 #include "core/device.h"
 
@@ -38,15 +39,37 @@ inline std::uint16_t f32_to_bf16(float f) {
     return std::uint16_t(u >> 16);
 }
 
-// Device bf16 buffer filled with a small varied ramp (avoids all-zero special
-// paths; exact values are irrelevant to bandwidth). Returns an owning DeviceBuffer.
-inline DeviceBuffer make_bf16(std::size_t n) {
-    std::vector<std::uint16_t> h(n);
-    for (std::size_t i = 0; i < n; ++i) h[i] = f32_to_bf16(0.5f - float(i % 251) / 250.0f);
-    DeviceBuffer d(n * 2);
-    d.copy_from_host(h.data(), d.bytes);
-    return d;
+// Every operand supplies a stable seed; allocation order does not select the data.
+inline DeviceBuffer make_bf16(std::size_t n, std::uint64_t seed, float low = -0.5F,
+                              float high = 0.5F) {
+    DeviceBuffer result(n * sizeof(__nv_bfloat16));
+    CUDA_CHECK(fixture::fill_values(static_cast<__nv_bfloat16*>(result.p), n, seed, low, high));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    return result;
 }
+
+inline DeviceBuffer make_f32(std::size_t n, std::uint64_t seed, float low, float high) {
+    DeviceBuffer result(n * sizeof(float));
+    CUDA_CHECK(fixture::fill_values(static_cast<float*>(result.p), n, seed, low, high));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    return result;
+}
+
+// Snapshot only mutable operands. Restore is setup, never part of a timed Op.
+class SavedBuffer {
+public:
+    explicit SavedBuffer(DeviceBuffer& buffer) : destination_(buffer.p), initial_(buffer.bytes) {
+        CUDA_CHECK(cudaMemcpy(initial_.p, buffer.p, buffer.bytes, cudaMemcpyDeviceToDevice));
+    }
+
+    void restore(cudaStream_t stream) const {
+        CUDA_CHECK(cudaMemcpyAsync(destination_, initial_.p, initial_.bytes,
+                                   cudaMemcpyDeviceToDevice, stream));
+    }
+private:
+    void* destination_;
+    DeviceBuffer initial_;
+};
 
 inline DeviceBuffer make_zeros(std::size_t bytes) {
     DeviceBuffer d(bytes);
@@ -181,7 +204,8 @@ inline ColdTiming measure_graph(const TimedGraph& graph, cudaStream_t stream, in
 }
 
 inline void flush_l2(DeviceBuffer& flush, cudaStream_t stream) {
-    CUDA_CHECK(cudaMemsetAsync(flush.p, 0xa5, flush.bytes, stream));
+    // Write nonrepeating cache lines across the caller-owned eviction buffer.
+    CUDA_CHECK(fixture::fill_bytes(flush.p, flush.bytes, 0x4c324576696374ULL, stream));
 }
 
 template <class Launch>
@@ -253,6 +277,43 @@ inline ColdTiming measure_cold_graph(const TimedGraph& graph, DeviceBuffer& flus
         return samples[index];
     };
     return {percentile(0.50), samples.front(), percentile(0.95)};
+}
+
+template <class Prepare, class Launch>
+ColdTiming measure_launch_prepared(Prepare&& prepare, Launch&& launch, cudaStream_t stream,
+                                   int warmup, int repeat) {
+    if (warmup < 0 || repeat <= 0) throw std::invalid_argument("invalid benchmark repetitions");
+    cudaEvent_t start = nullptr, stop = nullptr;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    for (int i = 0; i < warmup; ++i) {
+        prepare(stream);
+        launch(stream);
+    }
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::vector<double> samples;
+    samples.reserve(repeat);
+    for (int i = 0; i < repeat; ++i) {
+        prepare(stream);
+        CUDA_CHECK(cudaEventRecord(start, stream));
+        launch(stream);
+        CUDA_CHECK(cudaEventRecord(stop, stream));
+        CUDA_CHECK(cudaEventSynchronize(stop));
+        float ms = 0;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+        samples.push_back(double(ms) * 1000.0);
+    }
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    return summarize_timings(std::move(samples));
+}
+
+template <class Prepare>
+ColdTiming measure_graph_prepared(Prepare&& prepare, const TimedGraph& graph, cudaStream_t stream,
+                                  int warmup, int repeat) {
+    return measure_launch_prepared(
+        std::forward<Prepare>(prepare), [&](cudaStream_t s) { graph.launch(s); }, stream, warmup,
+        repeat);
 }
 
 // Cold measurement for an Op that updates its own input in place. `prepare` restores that input to
@@ -394,6 +455,25 @@ inline Result bench_loop(const launch_fn& launch, double bytes_moved, int warmup
     const double sec = r.median_us * 1e-6;
     r.gbs            = (sec > 0.0) ? bytes_moved / sec / 1e9 : 0.0;
     return r;
+}
+
+// Mutating Ops use one captured call per sample, restored outside the graph and events.
+// Repeatedly applying the Op inside an inner loop changes the measured workload.
+inline Result bench_loop_prepared(const launch_fn& prepare, const launch_fn& launch,
+                                  double bytes_moved, int warmup = 20, int repeat = 100) {
+    cudaStream_t stream = nullptr;
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    TimedGraph graph;
+    graph.capture(stream, launch);
+    const auto timing = measure_graph_prepared(prepare, graph, stream, warmup, repeat);
+    CUDA_CHECK(cudaStreamDestroy(stream));
+    Result result;
+    result.n_runs    = repeat;
+    result.median_us = timing.median_us;
+    result.min_us    = timing.min_us;
+    result.p95_us    = timing.p95_us;
+    result.gbs       = bytes_moved / timing.median_us / 1.0e3;
+    return result;
 }
 
 inline void print_result(const char* tag, const Result& r) {

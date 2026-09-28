@@ -10,6 +10,21 @@ The frozen request corpus for the separate black-box Serve TTFT tool is document
 [`fixtures/ttft/`](fixtures/ttft/README.md). That client does not call the benchmark executables or
 Engine directly.
 
+## Benchmark inputs
+
+Synthetic numerical inputs use reproducible pseudorandom values with distinct operand seeds,
+finite values, and format-correct codes/scales. Floating ranges reflect the operand's role;
+control inputs (masks, positions, routing patterns), padding, and output/workspace initialization
+retain their defined semantics. Model benchmarks use actual artifact weights and text fixtures.
+The shared generators live in `common/fixture_data.cuh` and `ops/quantized_weight.cuh`.
+
+Initialization and restoration are outside timed regions. In-place Ops restore their initial
+operands before each sample, warmup, and profile call; their timed graphs contain one Op rather
+than repeatedly transforming the same data. Cold measurements restore first, then evict L2 with
+nonrepeating data. These changes establish a new input/timing baseline: older constant or periodic
+fixtures and repeated in-place chains are not directly comparable. Compare implementations using
+the same fixture, seed, cache policy, and timing mode.
+
 ## Build
 
 `CMakeLists.txt` includes explicit registrations from `ops/`, `inference/`, `context_cost/`

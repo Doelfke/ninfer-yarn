@@ -159,8 +159,10 @@ int main(int argc, char** argv) {
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         DeviceBuffer flush(kFlushBytes);
-        DeviceBuffer input    = bench::make_bf16(static_cast<std::size_t>(options.k) * max_t);
-        DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(kRows) * max_t);
+        DeviceBuffer input    = bench::make_bf16(static_cast<std::size_t>(options.k) * max_t, 101U);
+        DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(kRows) * max_t, 103U);
+        bench::SavedBuffer residual_initial(residual);
+        const auto restore                   = [&](cudaStream_t s) { residual_initial.restore(s); };
         bench::PackedQuantizedWeight packed  = bench::make_fp8_weight(kRows, options.k);
         const std::size_t workspace_capacity = ops::linear_add_workspace_capacity_bytes(
             QType::FP8_E4M3FN_ROW_BF16, kRows, options.k, options.policy, min_t, max_t);
@@ -175,10 +177,12 @@ int main(int argc, char** argv) {
         if (options.profile) {
             const std::int32_t tokens = options.t_sweep.front();
             for (int iteration = 0; iteration < options.warmup; ++iteration) {
+                restore(stream);
                 bench::flush_l2(flush, stream);
                 launch(tokens, stream);
             }
             CUDA_CHECK(cudaStreamSynchronize(stream));
+            restore(stream);
             bench::flush_l2(flush, stream);
             CUDA_CHECK(cudaStreamSynchronize(stream));
             std::printf("PROFILE linear_add weight_type=FP8 policy=%s N=%d K=%d T=%d\n",
@@ -198,9 +202,9 @@ int main(int argc, char** argv) {
         std::printf("%-4s %8s %8s %6s %11s %11s %11s %10s %10s %8s\n", "pol", "N", "K", "T",
                     "median_us", "min_us", "p95_us", "eff_GB/s", "TFLOP/s", "TC_%");
         for (const std::int32_t tokens : options.t_sweep) {
-            const bench::ColdTiming timing = bench::measure_cold_launch(
-                [&](cudaStream_t launch_stream) { launch(tokens, launch_stream); }, flush, stream,
-                options.warmup, options.repeat);
+            const bench::ColdTiming timing = bench::measure_cold_launch_prepared(
+                restore, [&](cudaStream_t launch_stream) { launch(tokens, launch_stream); }, flush,
+                stream, options.warmup, options.repeat);
             const double seconds = timing.median_us * 1.0e-6;
             const double flops   = 2.0 * static_cast<double>(kRows) * options.k * tokens;
             const double bytes   = static_cast<double>(packed.model_weight_bytes()) +

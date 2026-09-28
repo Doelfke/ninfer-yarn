@@ -215,18 +215,10 @@ std::size_t workspace_capacity(std::int32_t window, std::int32_t tokens, std::in
         kGeometry, static_cast<std::uint32_t>(window), envelope, tokens, tokens, batch);
 }
 
-__global__ void fill_context_values(__half* values, std::size_t elements) {
-    const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (index < elements) {
-        const float value = 0.5f - static_cast<float>(index % 251) / 250.0f;
-        values[index]     = __float2half_rn(__bfloat162float(__float2bfloat16_rn(value)));
-    }
-}
-
 DeviceBuffer make_context_values(std::size_t elements) {
     DeviceBuffer result(elements * sizeof(__half));
-    fill_context_values<<<(elements + 255) / 256, 256>>>(static_cast<__half*>(result.p), elements);
-    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(
+        bench::fixture::fill_values(static_cast<__half*>(result.p), elements, 311U, -1.F, 1.F));
     CUDA_CHECK(cudaDeviceSynchronize());
     return result;
 }
@@ -236,16 +228,17 @@ public:
     Case(std::int32_t window, std::int32_t tokens, std::int32_t batch, std::int32_t context,
          std::int32_t maximum)
         : window_(window), tokens_(tokens), batch_(batch), context_(context),
-          q_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kQueryHeads * tokens * batch)),
-          query_k_(
-              bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kKvHeads * tokens * batch)),
-          query_v_(
-              bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kKvHeads * tokens * batch)),
+          q_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kQueryHeads * tokens * batch,
+                              101U)),
+          query_k_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kKvHeads * tokens * batch,
+                                    103U)),
+          query_v_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kKvHeads * tokens * batch,
+                                    105U)),
           positions_(static_cast<std::size_t>(tokens) * batch * sizeof(std::int32_t)),
           valid_(static_cast<std::size_t>(batch) * sizeof(std::int32_t)),
           lane_(static_cast<std::size_t>(batch) * sizeof(std::int32_t)),
-          context_k_(
-              bench::make_bf16(static_cast<std::size_t>(kHeadDim) * window * kKvHeads * batch)),
+          context_k_(bench::make_bf16(
+              static_cast<std::size_t>(kHeadDim) * window * kKvHeads * batch, 107U)),
           context_v_(
               make_context_values(static_cast<std::size_t>(kHeadDim) * window * kKvHeads * batch)),
           output_(bench::make_zeros(static_cast<std::size_t>(kHeadDim) * kQueryHeads * tokens *

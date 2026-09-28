@@ -311,11 +311,11 @@ void run_q4q5(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
     constexpr std::int32_t kZRows      = 6144;
     constexpr std::int32_t kOutputRows = kQkRows + kValueRows + kZRows;
     const std::int32_t max_tokens = *std::max_element(options.tokens.begin(), options.tokens.end());
-    bench::PackedQuantizedWeight qk = bench::make_row_split_weight(
-        QType::Q4_G64_FP16, kQkRows, kHidden, kHidden, {0x31, 0x00, 0x3c00});
+    bench::PackedQuantizedWeight qk =
+        bench::make_row_split_weight(QType::Q4_G64_FP16, kQkRows, kHidden, kHidden, 501U);
     bench::PackedQuantizedWeight value_z = bench::make_row_split_weight(
-        QType::Q5_G64_FP16, kValueRows + kZRows, kHidden, kHidden, {0x31, 0xa5, 0x3c00});
-    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens);
+        QType::Q5_G64_FP16, kValueRows + kZRows, kHidden, kHidden, 503U);
+    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens, 101U);
     DeviceBuffer qkv(static_cast<std::size_t>(kQkRows + kValueRows) * max_tokens * 2);
     DeviceBuffer z(static_cast<std::size_t>(kZRows) * max_tokens * 2);
     const auto make_launch = [&](std::int32_t tokens) {
@@ -339,9 +339,9 @@ void run_q8(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
     constexpr std::int32_t kZRows      = 4096;
     constexpr std::int32_t kOutputRows = kQkvRows + kZRows;
     const std::int32_t max_tokens = *std::max_element(options.tokens.begin(), options.tokens.end());
-    bench::PackedQuantizedWeight parent = bench::make_row_split_weight(
-        QType::Q8_G32_FP16, kOutputRows, kHidden, kHidden, {0x31, 0x00, 0x3c00});
-    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens);
+    bench::PackedQuantizedWeight parent =
+        bench::make_row_split_weight(QType::Q8_G32_FP16, kOutputRows, kHidden, kHidden, 505U);
+    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens, 103U);
     DeviceBuffer qkv(static_cast<std::size_t>(kQkvRows) * max_tokens * 2);
     DeviceBuffer z(static_cast<std::size_t>(kZRows) * max_tokens * 2);
     const auto make_launch = [&](std::int32_t tokens) {
@@ -371,7 +371,7 @@ void run_nvfp4(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
     const std::size_t maximum_workspace = ops::gdn_input_proj_workspace_capacity_bytes(
         QType::NVFP4, kOutputRows, kHidden, options.nvfp4_policy, max_tokens, max_tokens);
     WorkspaceArena workspace(std::max<std::size_t>(maximum_workspace, 256));
-    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens);
+    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens, 105U);
     DeviceBuffer qkv(static_cast<std::size_t>(kQkvRows) * max_tokens * 2);
     DeviceBuffer z(static_cast<std::size_t>(kZRows) * max_tokens * 2);
     const auto make_launch = [&](std::int32_t tokens) {
@@ -403,7 +403,7 @@ void run_fp8(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
     const std::size_t maximum_workspace = ops::gdn_input_proj_workspace_capacity_bytes(
         QType::FP8_E4M3FN_ROW_BF16, kOutputRows, kHidden, options.fp8_policy, 1, max_tokens);
     WorkspaceArena workspace(std::max<std::size_t>(maximum_workspace, 256));
-    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens);
+    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens, 107U);
     DeviceBuffer qkv(static_cast<std::size_t>(kQkvRows) * max_tokens * 2);
     DeviceBuffer z(static_cast<std::size_t>(kZRows) * max_tokens * 2);
     const auto make_launch = [&](std::int32_t tokens) {

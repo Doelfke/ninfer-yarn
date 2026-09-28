@@ -127,7 +127,7 @@ struct Fixture {
     std::array<DeviceBuffer, kLayers> cache_k;
     std::array<DeviceBuffer, kLayers> cache_v;
     std::array<ops::ContextKVMaterializeLayerView, kLayers> layers;
-    DeviceBuffer context = bench::make_bf16(static_cast<std::size_t>(kHidden) * 2048);
+    DeviceBuffer context = bench::make_bf16(static_cast<std::size_t>(kHidden) * 2048, 101U);
     DeviceBuffer positions;
     DeviceBuffer counts;
     DeviceBuffer slots;
@@ -143,10 +143,10 @@ struct Fixture {
         const std::size_t cache_bytes = static_cast<std::size_t>(kHeadDim) * kCapacity * kHeads *
                                         kLaneCapacity * sizeof(std::uint16_t);
         for (int layer = 0; layer < kLayers; ++layer) {
-            parents[static_cast<std::size_t>(layer)] =
-                bench::make_row_split_weight(QType::Q8_G32_FP16, kParentRows, kHidden, kHidden,
-                                             {static_cast<std::uint8_t>(0x31 + layer), 0, 0x2800});
-            norms[static_cast<std::size_t>(layer)]   = bench::make_bf16(kHeadDim);
+            parents[static_cast<std::size_t>(layer)] = bench::make_row_split_weight(
+                QType::Q8_G32_FP16, kParentRows, kHidden, kHidden, 501U + layer);
+            norms[static_cast<std::size_t>(layer)] =
+                bench::make_bf16(kHeadDim, 103U + layer, .8F, 1.2F);
             cache_k[static_cast<std::size_t>(layer)] = DeviceBuffer(cache_bytes);
             cache_v[static_cast<std::size_t>(layer)] = DeviceBuffer(cache_bytes);
             layers[static_cast<std::size_t>(layer)]  = {

@@ -394,13 +394,12 @@ const char* policy_name(ops::LinearPolicy policy) {
 class Q4Q5Fixture {
 public:
     explicit Q4Q5Fixture(std::size_t flush_bytes)
-        : qk_(bench::make_row_split_weight(QType::Q4_G64_FP16, kQkRows, kHidden, kHidden,
-                                           {0x53, 0x00, 0x3400})),
+        : qk_(bench::make_row_split_weight(QType::Q4_G64_FP16, kQkRows, kHidden, kHidden, 501U)),
           value_z_(bench::make_row_split_weight(QType::Q5_G64_FP16, kValueZRows, kHidden, kHidden,
-                                                {0x53, 0x55, 0x3400})),
-          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4)),
+                                                503U)),
+          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4, 101U)),
           flush_(flush_bytes) {
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        bench::flush_l2(flush_, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -440,9 +439,7 @@ public:
         }
     }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     bench::PackedQuantizedWeight qk_;
@@ -455,9 +452,9 @@ class Nvfp4Fixture {
 public:
     Nvfp4Fixture(std::size_t flush_bytes, ops::LinearPolicy policy)
         : parent_(bench::make_nvfp4_weight(kChannels + kZRows, kHidden)),
-          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4)),
+          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4, 103U)),
           flush_(flush_bytes), policy_(policy) {
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        bench::flush_l2(flush_, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -499,9 +496,7 @@ public:
         }
     }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     bench::PackedQuantizedWeight parent_;
@@ -514,9 +509,9 @@ class Fp8Fixture {
 public:
     Fp8Fixture(std::size_t flush_bytes, ops::LinearPolicy policy)
         : parent_(bench::make_fp8_weight(kChannels + kZRows, kHidden)),
-          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4)),
+          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4, 105U)),
           flush_(flush_bytes), policy_(policy) {
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        bench::flush_l2(flush_, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -560,9 +555,7 @@ public:
         }
     }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     bench::PackedQuantizedWeight parent_;
@@ -574,10 +567,10 @@ private:
 class Q8Fixture {
 public:
     explicit Q8Fixture(std::size_t flush_bytes)
-        : parent_(bench::make_row_split_weight(QType::Q8_G32_FP16, 12288, 2048, 2048,
-                                               {0x03, 0x00, 0x3c00})),
-          conv_weight_(bench::make_bf16(static_cast<std::size_t>(8192) * 4)), flush_(flush_bytes) {
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        : parent_(bench::make_row_split_weight(QType::Q8_G32_FP16, 12288, 2048, 2048, 505U)),
+          conv_weight_(bench::make_bf16(static_cast<std::size_t>(8192) * 4, 107U)),
+          flush_(flush_bytes) {
+        bench::flush_l2(flush_, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -615,9 +608,7 @@ public:
         }
     }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     bench::PackedQuantizedWeight parent_;
@@ -631,8 +622,10 @@ public:
     BenchmarkState(Fixture& fixture, Form form, std::int32_t tokens, const Options& options)
         : fixture_(fixture), geometry_(fixture.geometry()), form_(form), batch_(options.batch),
           slots_(batch_ == 1 ? tokens + 1 : batch_ * tokens + batch_),
-          input_(bench::make_bf16(static_cast<std::size_t>(geometry_.hidden) * tokens * batch_)),
-          states_(bench::make_bf16(static_cast<std::size_t>(geometry_.channels()) * 3 * slots_)),
+          input_(
+              bench::make_bf16(static_cast<std::size_t>(geometry_.hidden) * tokens * batch_, 109U)),
+          states_(
+              bench::make_bf16(static_cast<std::size_t>(geometry_.channels()) * 3 * slots_, 111U)),
           conv_record_(static_cast<std::size_t>(geometry_.channels()) * tokens * batch_ * 2),
           initial_slot_(static_cast<std::size_t>(batch_) * sizeof(std::int32_t)),
           snapshot_base_slot_(static_cast<std::size_t>(batch_) * sizeof(std::int32_t)),
@@ -677,7 +670,9 @@ public:
 
     [[nodiscard]] std::size_t workspace_bytes() const noexcept { return workspace_bytes_; }
 
-    [[nodiscard]] std::size_t workspace_peak_bytes() const noexcept { return workspace_.peak_used(); }
+    [[nodiscard]] std::size_t workspace_peak_bytes() const noexcept {
+        return workspace_.peak_used();
+    }
 
     void prepare(CacheState cache, cudaStream_t stream) {
         if (cache == CacheState::Cold) { fixture_.flush(stream); }
@@ -905,7 +900,8 @@ void write_csv(const std::string& path, const std::vector<Result>& results, cons
                 stream << options.valid_columns[index];
             }
         }
-        stream << ',' << options.warmup << ',' << options.repeat << ',' << options.flush_bytes << ','
+        stream << ',' << options.warmup << ',' << options.repeat << ',' << options.flush_bytes
+               << ','
 #ifdef NDEBUG
                << "Release"
 #else

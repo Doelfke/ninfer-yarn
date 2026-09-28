@@ -85,12 +85,15 @@ Options parse_args(int argc, char** argv) {
 
 void run_profile(std::int32_t input_rows, const Options& options, DeviceBuffer& flush,
                  cudaStream_t stream) {
-    DeviceBuffer input = make_bf16(static_cast<std::size_t>(input_rows) * kMaximumWidth * 8);
-    DeviceBuffer base  = make_bf16(static_cast<std::size_t>(kHidden) * kTaps * kSides);
-    DeviceBuffer delta = make_bf16(static_cast<std::size_t>(kGroups) * kTaps * kMaximumWidth * 8);
-    DeviceBuffer residual        = make_bf16(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8);
-    PackedQuantizedWeight packed = make_row_split_weight(QType::Q8_G32_FP16, kHidden, input_rows,
-                                                         input_rows, {0x31U, 0x00U, 0x1800U});
+    DeviceBuffer input = make_bf16(static_cast<std::size_t>(input_rows) * kMaximumWidth * 8, 101U);
+    DeviceBuffer base  = make_bf16(static_cast<std::size_t>(kHidden) * kTaps * kSides, 103U);
+    DeviceBuffer delta =
+        make_bf16(static_cast<std::size_t>(kGroups) * kTaps * kMaximumWidth * 8, 105U);
+    DeviceBuffer residual = make_bf16(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8, 107U);
+    SavedBuffer residual_initial(residual);
+    const auto restore = [&](cudaStream_t s) { residual_initial.restore(s); };
+    PackedQuantizedWeight packed =
+        make_row_split_weight(QType::Q8_G32_FP16, kHidden, input_rows, input_rows, 501U);
     const std::size_t capacity =
         ops::linear_dynamic_grouped_conv_add_workspace_capacity_bytes(input_rows, 2, 16, 1, 8);
     WorkspaceArena workspace(std::max<std::size_t>(capacity, 256));
@@ -115,8 +118,8 @@ void run_profile(std::int32_t input_rows, const Options& options, DeviceBuffer& 
                 workspace.reset();
                 workspace.reset_peak();
                 graph.capture(stream, launch);
-                const ColdTiming timing =
-                    measure_cold_graph(graph, flush, stream, options.warmup, options.repeat);
+                const ColdTiming timing = measure_cold_graph_prepared(
+                    restore, graph, flush, stream, options.warmup, options.repeat);
                 const double tflops    = flops / timing.median_us / 1.0e6;
                 const double bandwidth = bytes / timing.median_us / 1.0e3;
                 std::printf("%d,%d,%d,%d,%s,%.3f,%.3f,%.3f,%.2f,%.1f,%zu,%zu\n", input_rows, width,

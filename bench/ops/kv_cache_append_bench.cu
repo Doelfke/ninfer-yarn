@@ -328,8 +328,10 @@ public:
         : geometry_(geometry), storage_(storage),
           storage_layout_(paged_kv_storage_layout(storage, kFullHeadDim)), tokens_(tokens),
           capacity_(context + tokens), padded_(align_context(capacity_)),
-          k_(bench::make_bf16(static_cast<std::size_t>(kFullHeadDim) * geometry.kv_heads * tokens)),
-          v_(bench::make_bf16(static_cast<std::size_t>(kFullHeadDim) * geometry.kv_heads * tokens)),
+          k_(bench::make_bf16(static_cast<std::size_t>(kFullHeadDim) * geometry.kv_heads * tokens,
+                              101U)),
+          v_(bench::make_bf16(static_cast<std::size_t>(kFullHeadDim) * geometry.kv_heads * tokens,
+                              103U)),
           positions_(static_cast<std::size_t>(tokens) * sizeof(std::int32_t)),
           cache_k_(bench::make_zeros(full_data_bytes(geometry, storage_layout_.key, padded_))),
           cache_v_(bench::make_zeros(full_data_bytes(geometry, storage_layout_.value, padded_))),
@@ -421,10 +423,10 @@ public:
     PrefixCase(std::int32_t tokens, std::int32_t committed, bool cyclic,
                std::int32_t cyclic_capacity, std::int32_t batch, int maximum)
         : tokens_(tokens), committed_(committed), cyclic_(cyclic),
-          k_(bench::make_bf16(static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * tokens *
-                              batch)),
-          v_(bench::make_bf16(static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * tokens *
-                              batch)),
+          k_(bench::make_bf16(
+              static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * tokens * batch, 105U)),
+          v_(bench::make_bf16(
+              static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * tokens * batch, 107U)),
           positions_(static_cast<std::size_t>(tokens) * batch * sizeof(std::int32_t)),
           commit_count_(static_cast<std::size_t>(batch) * sizeof(std::int32_t)),
           selector_(static_cast<std::size_t>(batch) * sizeof(std::int32_t)),

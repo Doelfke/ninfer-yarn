@@ -505,16 +505,14 @@ class BenchmarkWeights {
 public:
     BenchmarkWeights(CodecProfile profile, std::uint32_t seed, std::size_t flush_bytes)
         : router_(static_cast<std::size_t>(kRouterRows) * kHidden * 2),
-          routed_gate_(bench::make_row_split_weight(
-              gate_codec(profile), kExperts * 1024, kHidden, kHidden,
-              {static_cast<std::uint8_t>(0x31U ^ seed), 0xa5, 0x1401})),
-          routed_down_(bench::make_row_split_weight(
-              down_codec(profile), kExperts * kHidden, kIntermediate, kIntermediate,
-              {static_cast<std::uint8_t>(0x59U ^ (seed >> 8)), 0x6d, 0x1403})),
+          routed_gate_(bench::make_row_split_weight(gate_codec(profile), kExperts * 1024, kHidden,
+                                                    kHidden, seed ^ 501U)),
+          routed_down_(bench::make_row_split_weight(down_codec(profile), kExperts * kHidden,
+                                                    kIntermediate, kIntermediate, seed ^ 503U)),
           shared_gate_(bench::make_row_split_weight(QType::Q8_G32_FP16, 1024, kHidden, kHidden,
-                                                    {0x27, 0x00, 0x1405})),
+                                                    seed ^ 505U)),
           shared_down_(bench::make_row_split_weight(QType::Q8_G32_FP16, kHidden, kIntermediate,
-                                                    kIntermediate, {0x73, 0x00, 0x1407})),
+                                                    kIntermediate, seed ^ 507U)),
           flush_(flush_bytes) {
         std::vector<std::uint16_t> router(static_cast<std::size_t>(kRouterRows) * kHidden,
                                           bench::f32_to_bf16(0.0F));
@@ -523,7 +521,7 @@ public:
         }
         router[static_cast<std::size_t>(kExperts) * kHidden + kExperts] = bench::f32_to_bf16(4.0F);
         router_.copy_from_host(router.data(), router_.bytes);
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        bench::flush_l2(flush_, nullptr);
 
         weights_ = {
             dense_weight(router_.p, kRouterRows, kHidden),
@@ -537,9 +535,7 @@ public:
 
     [[nodiscard]] const ops::SparseMoeWeights& weights() const noexcept { return weights_; }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     DeviceBuffer router_;
@@ -566,11 +562,11 @@ public:
         std::vector<std::uint16_t> residual(static_cast<std::size_t>(tokens) * kHidden);
         for (std::int32_t token = 0; token < tokens; ++token) {
             for (std::int32_t index = 0; index < kHidden; ++index) {
-                const std::int32_t centered = (index * 17 + token * 29 + (index ^ token)) % 81 - 40;
-                input[static_cast<std::size_t>(token) * kHidden + index] =
-                    bench::f32_to_bf16(static_cast<float>(centered) * 0.001F);
-                residual[static_cast<std::size_t>(token) * kHidden + index] = bench::f32_to_bf16(
-                    0.125F + static_cast<float>((index + 11 * token) % 17) * 0.002F);
+                const auto offset = static_cast<std::size_t>(token) * kHidden + index;
+                input[offset] =
+                    bench::f32_to_bf16(bench::fixture::uniform(offset, seed ^ 101U, -.04F, .04F));
+                residual[offset] =
+                    bench::f32_to_bf16(bench::fixture::uniform(offset, seed ^ 103U, -.2F, .2F));
             }
             for (std::int32_t expert = 0; expert < kExperts; ++expert) {
                 input[static_cast<std::size_t>(token) * kHidden + expert] =

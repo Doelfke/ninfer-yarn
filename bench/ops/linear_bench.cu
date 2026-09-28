@@ -184,15 +184,6 @@ struct LinearBenchWeight {
     [[nodiscard]] std::uint64_t model_weight_bytes() const noexcept { return model_bytes; }
 };
 
-__global__ void fill_bf16_kernel(__nv_bfloat16* values, std::uint64_t count) {
-    const std::uint64_t begin  = blockIdx.x * static_cast<std::uint64_t>(blockDim.x) + threadIdx.x;
-    const std::uint64_t stride = gridDim.x * static_cast<std::uint64_t>(blockDim.x);
-    for (std::uint64_t i = begin; i < count; i += stride) {
-        const float value = 0.5F - static_cast<float>(i % 251ULL) / 250.0F;
-        values[i]         = __float2bfloat16(value);
-    }
-}
-
 std::uint64_t checked_add(std::uint64_t a, std::uint64_t b, const char* label) {
     if (a > std::numeric_limits<std::uint64_t>::max() - b) {
         throw std::overflow_error(std::string(label) + " overflows uint64");
@@ -537,16 +528,14 @@ LinearBenchWeight make_weight(QType qtype, std::int32_t n, std::int32_t k) {
         throw std::overflow_error("padded K does not fit int32");
     }
     bench::PackedQuantizedWeight packed =
-        bench::make_row_split_weight(qtype, n, k, static_cast<std::int32_t>(padded_k_u64),
-                                     bench::QuantizedWeightFill{0x31, 0xa5, 0x3c00});
+        bench::make_row_split_weight(qtype, n, k, static_cast<std::int32_t>(padded_k_u64), 501U);
     const std::uint64_t model_bytes = packed.model_weight_bytes();
     return {std::move(packed.storage), packed.weight, model_bytes};
 }
 
 void fill_activation(DeviceBuffer& buffer, std::uint64_t elements, cudaStream_t stream) {
-    fill_bf16_kernel<<<launch_grid(elements), 256, 0, stream>>>(
-        static_cast<__nv_bfloat16*>(buffer.p), elements);
-    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(buffer.p), elements, 101U,
+                                           -0.5F, 0.5F, stream));
 }
 
 std::string join_labels(const std::vector<std::string>& labels) {

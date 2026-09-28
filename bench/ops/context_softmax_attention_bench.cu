@@ -189,13 +189,15 @@ class Case {
 public:
     Case(std::int32_t tokens, std::int32_t context)
         : tokens_(tokens), context_(context),
-          q_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kQueryHeads * tokens)),
-          query_k_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kKvHeads * tokens)),
-          query_v_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kKvHeads * tokens)),
-          context_k_(bench::make_zeros(static_cast<std::size_t>(kHeadDim) * paged_context(context) *
-                                       kKvHeads * 2)),
-          context_v_(bench::make_zeros(static_cast<std::size_t>(kHeadDim) * paged_context(context) *
-                                       kKvHeads * 2)),
+          q_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kQueryHeads * tokens, 101U)),
+          query_k_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kKvHeads * tokens, 103U)),
+          query_v_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * kKvHeads * tokens, 105U)),
+          context_k_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * paged_context(context) *
+                                          kKvHeads,
+                                      211U, -.25F, .25F)),
+          context_v_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * paged_context(context) *
+                                          kKvHeads,
+                                      311U, -1.F, 1.F)),
           block_table_(static_cast<std::size_t>(paged_context(context) / kPagedKVPageSize) *
                        sizeof(std::int32_t)),
           context_length_(sizeof(std::int32_t)), valid_(sizeof(std::int32_t)),

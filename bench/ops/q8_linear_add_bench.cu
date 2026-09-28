@@ -153,10 +153,13 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         ninfer::DeviceBuffer flush(kFlushBytes);
         ninfer::DeviceBuffer input =
-            bench::make_bf16(static_cast<std::size_t>(options.hidden) * max_t);
-        ninfer::DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(kRows) * max_t);
+            bench::make_bf16(static_cast<std::size_t>(options.hidden) * max_t, 101U);
+        ninfer::DeviceBuffer residual =
+            bench::make_bf16(static_cast<std::size_t>(kRows) * max_t, 103U);
+        bench::SavedBuffer residual_initial(residual);
+        const auto restore                  = [&](cudaStream_t s) { residual_initial.restore(s); };
         bench::PackedQuantizedWeight packed = bench::make_row_split_weight(
-            QType::Q8_G32_FP16, kRows, options.hidden, options.hidden, {0x31, 0x00, 0x3c00});
+            QType::Q8_G32_FP16, kRows, options.hidden, options.hidden, 501U);
         const std::size_t workspace_capacity = ops::linear_add_workspace_capacity_bytes(
             QType::Q8_G32_FP16, kRows, options.hidden, min_t, max_t);
         WorkspaceArena workspace(std::max<std::size_t>(workspace_capacity, 256));
@@ -178,8 +181,8 @@ int main(int argc, char** argv) {
 
             const auto run = [&](const char* path, auto&& launch) {
                 append(results, path, t, options.hidden,
-                       bench::measure_cold_launch(launch, flush, stream, options.warmup,
-                                                  options.repeat),
+                       bench::measure_cold_launch_prepared(restore, launch, flush, stream,
+                                                           options.warmup, options.repeat),
                        packed.storage.bytes);
             };
             run(ops::detail::q8_linear_add_schedule_name(plan.schedule),

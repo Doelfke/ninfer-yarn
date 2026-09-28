@@ -111,9 +111,10 @@ int main(int argc, char** argv) {
     }
     try {
         const Options options = parse_args(argc, argv);
-        DeviceBuffer residual = make_bf16(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8);
-        DeviceBuffer norm     = make_bf16(kHidden);
-        DeviceBuffer base     = make_bf16(static_cast<std::size_t>(kHidden) * kTaps * kSides);
+        DeviceBuffer residual =
+            make_bf16(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8, 101U);
+        DeviceBuffer norm = make_bf16(kHidden, 103U, .8F, 1.2F);
+        DeviceBuffer base = make_bf16(static_cast<std::size_t>(kHidden) * kTaps * kSides, 105U);
         DirectBf16Weight projection = make_direct_bf16_weight(kCoefficientRows, kHidden, 0x31U);
         DeviceBuffer prepared = make_zeros(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8 *
                                            sizeof(std::uint16_t));

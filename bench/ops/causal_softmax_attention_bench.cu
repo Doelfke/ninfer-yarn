@@ -403,26 +403,8 @@ ops::CausalAttentionExecutionEnvelope execution_envelope(int visible, int maximu
     return {1, static_cast<unsigned>(maximum)};
 }
 
-__global__ void initialize_values(__nv_bfloat16* data, std::size_t count, unsigned seed,
-                                  float scale) {
-    const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i >= count) return;
-    unsigned value = static_cast<unsigned>(i) + seed;
-    value ^= value >> 16;
-    value *= 0x7feb352dU;
-    value ^= value >> 15;
-    value *= 0x846ca68bU;
-    value ^= value >> 16;
-    data[i] = __float2bfloat16_rn((float(value >> 8) * (2.f / 16777216.f) - 1.f) * scale);
-}
-
 DeviceBuffer varied_values(std::size_t count, unsigned seed, float scale) {
-    DeviceBuffer result(count * 2);
-    initialize_values<<<(count + 255) / 256, 256>>>(static_cast<__nv_bfloat16*>(result.p), count,
-                                                    seed, scale);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-    return result;
+    return bench::make_bf16(count, seed, -scale, scale);
 }
 
 class Case {

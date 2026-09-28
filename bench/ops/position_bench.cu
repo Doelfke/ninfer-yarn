@@ -55,7 +55,7 @@ Result bench_cold_graph(const launch_fn& launch, double bytes, DeviceBuffer& flu
     CUDA_CHECK(cudaEventCreate(&begin));
     CUDA_CHECK(cudaEventCreate(&end));
     for (int i = 0; i < warmup; ++i) {
-        CUDA_CHECK(cudaMemsetAsync(flush.p, 0xa5, flush.bytes, stream));
+        bench::flush_l2(flush, stream);
         CUDA_CHECK(cudaGraphLaunch(exec, stream));
     }
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -63,7 +63,7 @@ Result bench_cold_graph(const launch_fn& launch, double bytes, DeviceBuffer& flu
     std::vector<double> samples;
     samples.reserve(static_cast<std::size_t>(repeat));
     for (int i = 0; i < repeat; ++i) {
-        CUDA_CHECK(cudaMemsetAsync(flush.p, 0xa5, flush.bytes, stream));
+        bench::flush_l2(flush, stream);
         CUDA_CHECK(cudaEventRecord(begin, stream));
         CUDA_CHECK(cudaGraphLaunch(exec, stream));
         CUDA_CHECK(cudaEventRecord(end, stream));

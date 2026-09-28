@@ -367,12 +367,15 @@ template <int Heads>
 void run_text_single(int tokens, int axes, bool control, const char* geometry, const char* role) {
     const std::size_t elements = static_cast<std::size_t>(kTextHeadDim) * Heads * tokens;
     DeviceBuffer positions     = make_text_positions(tokens, axes);
-    DeviceBuffer x             = make_bf16(elements);
+    DeviceBuffer x             = make_bf16(elements, 101U);
+    SavedBuffer initial_x(x);
+    const auto restore = [&](cudaStream_t stream) { initial_x.restore(stream); };
     Tensor tpos(positions.p, DType::I32, {tokens, axes});
     Tensor tx(x.p, DType::BF16, {kTextHeadDim, Heads, tokens});
     const double bytes =
         2.0 * static_cast<double>(Heads * kTextRotaryDim) * tokens * sizeof(__nv_bfloat16);
-    const Result result = bench_loop(
+    const Result result = bench_loop_prepared(
+        restore,
         [&](cudaStream_t stream) {
             if (control) {
                 launch_text_control<Heads, 0>(tpos, tx, tx, stream);
@@ -404,14 +407,21 @@ void run_text(int tokens, int axes, bool control, int candidate_block, const cha
     const std::size_t q_elements = static_cast<std::size_t>(kTextHeadDim) * QHeads * tokens;
     const std::size_t k_elements = static_cast<std::size_t>(kTextHeadDim) * KHeads * tokens;
     DeviceBuffer positions       = make_text_positions(tokens, axes);
-    DeviceBuffer q               = make_bf16(q_elements);
-    DeviceBuffer k               = make_bf16(k_elements);
+    DeviceBuffer q               = make_bf16(q_elements, 103U);
+    DeviceBuffer k               = make_bf16(k_elements, 105U);
+    SavedBuffer initial_q(q);
+    SavedBuffer initial_k(k);
+    const auto restore = [&](cudaStream_t stream) {
+        initial_q.restore(stream);
+        initial_k.restore(stream);
+    };
     Tensor tpos(positions.p, DType::I32, {tokens, axes});
     Tensor tq(q.p, DType::BF16, {kTextHeadDim, QHeads, tokens});
     Tensor tk(k.p, DType::BF16, {kTextHeadDim, KHeads, tokens});
     const double bytes = 2.0 * static_cast<double>((QHeads + KHeads) * kTextRotaryDim) * tokens *
                          sizeof(__nv_bfloat16);
-    const Result result = bench_loop(
+    const Result result = bench_loop_prepared(
+        restore,
         [&](cudaStream_t stream) {
             if (control) {
                 launch_text_control<QHeads, KHeads>(tpos, tq, tk, stream);
@@ -439,8 +449,14 @@ void run_dflash(int tokens, bool control, int candidate_block, int candidate_hea
     const std::size_t k_elements =
         static_cast<std::size_t>(kDflashHeadDim) * kDflashKHeads * tokens;
     DeviceBuffer positions = make_text_positions(tokens, 1);
-    DeviceBuffer q         = make_bf16(q_elements);
-    DeviceBuffer k         = make_bf16(k_elements);
+    DeviceBuffer q         = make_bf16(q_elements, 107U);
+    DeviceBuffer k         = make_bf16(k_elements, 109U);
+    SavedBuffer initial_q(q);
+    SavedBuffer initial_k(k);
+    const auto restore = [&](cudaStream_t stream) {
+        initial_q.restore(stream);
+        initial_k.restore(stream);
+    };
     Tensor tpos(positions.p, DType::I32, {tokens});
     Tensor tq(q.p, DType::BF16, {kDflashHeadDim, kDflashQHeads, tokens});
     Tensor tk(k.p, DType::BF16, {kDflashHeadDim, kDflashKHeads, tokens});
@@ -462,6 +478,7 @@ void run_dflash(int tokens, bool control, int candidate_block, int candidate_hea
     if (profile) {
         for (int warmup = 0; warmup < 20; ++warmup) { launch(nullptr); }
         CUDA_CHECK(cudaDeviceSynchronize());
+        restore(nullptr);
         launch(nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
         if (candidate_heads != 0) {
@@ -478,7 +495,7 @@ void run_dflash(int tokens, bool control, int candidate_block, int candidate_hea
                               : candidate_heads ? "candidate-h" + std::to_string(candidate_heads)
                               : candidate_block ? "candidate-b" + std::to_string(block)
                                                 : dflash_production_route(tokens);
-    const Result result     = bench_loop(launch, bytes);
+    const Result result     = bench_loop_prepared(restore, launch, bytes);
     const std::string label =
         "rope text dflash axes=1 route=" + route + " T=" + std::to_string(tokens);
     print_result(label.c_str(), result);
@@ -487,12 +504,15 @@ void run_dflash(int tokens, bool control, int candidate_block, int candidate_hea
 void run_dflash_single_k(int tokens, bool control) {
     const std::size_t elements = static_cast<std::size_t>(kDflashHeadDim) * kDflashKHeads * tokens;
     DeviceBuffer positions     = make_text_positions(tokens, 1);
-    DeviceBuffer x             = make_bf16(elements);
+    DeviceBuffer x             = make_bf16(elements, 111U);
+    SavedBuffer initial_x(x);
+    const auto restore = [&](cudaStream_t stream) { initial_x.restore(stream); };
     Tensor tpos(positions.p, DType::I32, {tokens});
     Tensor tx(x.p, DType::BF16, {kDflashHeadDim, kDflashKHeads, tokens});
     const double bytes = 2.0 * static_cast<double>(kDflashKHeads * kDflashRotaryDim) * tokens *
                          sizeof(__nv_bfloat16);
-    const Result result = bench_loop(
+    const Result result = bench_loop_prepared(
+        restore,
         [&](cudaStream_t stream) {
             if (control) {
                 rope_payload_control_kernel<ops::RopeKernelMode::DflashText1D, kDflashHeadDim,
@@ -517,7 +537,9 @@ void run_vision(int patches, bool control) {
     constexpr int hidden   = kVisionHeadDim * kVisionHeads;
     constexpr int qkv      = hidden * 3;
     DeviceBuffer positions = make_vision_positions(patches);
-    DeviceBuffer packed    = make_zeros(static_cast<std::size_t>(qkv) * patches * 2);
+    DeviceBuffer packed    = make_bf16(static_cast<std::size_t>(qkv) * patches, 113U);
+    SavedBuffer initial_packed(packed);
+    const auto restore = [&](cudaStream_t stream) { initial_packed.restore(stream); };
     Tensor tq(packed.p, DType::BF16, {kVisionHeadDim, kVisionHeads, patches});
     tq.nb[2]  = qkv * 2;
     Tensor tk = tq;
@@ -525,7 +547,8 @@ void run_vision(int patches, bool control) {
     Tensor tpos(positions.p, DType::I32, {patches, 2});
     const double bytes = 2.0 * static_cast<double>(2 * kVisionHeads * kVisionHeadDim) * patches *
                          sizeof(__nv_bfloat16);
-    const Result result = bench_loop(
+    const Result result = bench_loop_prepared(
+        restore,
         [&](cudaStream_t stream) {
             if (control) {
                 launch_vision_control(tpos, tq, tk, stream);
