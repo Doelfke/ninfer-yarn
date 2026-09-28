@@ -351,7 +351,7 @@ struct Operands {
 
 template <class Launch>
 GraphMeasurement measure_graph(
-    Launch& launch, DeviceBuffer& flush, cudaStream_t stream, const Options& options,
+    Launch& launch, bench::L2FlushBuffer& flush, cudaStream_t stream, const Options& options,
     const launch_fn& restore = [](cudaStream_t) {}) {
     restore(stream);
     // Resolve lazy CUDA function attributes and reject an invalid case before capture.
@@ -440,7 +440,7 @@ TrafficBytes batch_update_traffic(const Problem& problem, bool composed) {
     };
 }
 
-BenchRow run_batch_update(const Options& options, std::int32_t tokens, DeviceBuffer& flush,
+BenchRow run_batch_update(const Options& options, std::int32_t tokens, bench::L2FlushBuffer& flush,
                           cudaStream_t stream) {
     const Problem problem{options.qk_heads, options.value_heads, tokens, options.batch};
     Operands operands(problem, false);
@@ -521,8 +521,8 @@ BenchRow run_batch_update(const Options& options, std::int32_t tokens, DeviceBuf
     };
 }
 
-std::vector<BenchRow> run_prefill(const Options& options, std::int32_t tokens, DeviceBuffer& flush,
-                                  DeviceExecutionView execution) {
+std::vector<BenchRow> run_prefill(const Options& options, std::int32_t tokens,
+                                  bench::L2FlushBuffer& flush, DeviceExecutionView execution) {
     constexpr auto state_dim = gated_delta_net_detail::kStateDim;
     const bool normalize     = options.mode != Mode::ChunkedOnly;
     const bool force_chunked =
@@ -712,7 +712,7 @@ int main(int argc, char** argv) {
         cudaDeviceProp device{};
         CUDA_CHECK(cudaGetDeviceProperties(&device, 0));
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(options.flush_bytes);
+        bench::L2FlushBuffer flush(options.flush_bytes);
         print_banner(options, device);
 
         for (const std::int32_t tokens : token_values(options)) {

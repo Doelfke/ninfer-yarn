@@ -199,7 +199,7 @@ const char* policy_name(ops::LinearPolicy policy) {
 }
 
 template <class Launch>
-Measurement measure_public(Launch&& launch, CacheState cache, DeviceBuffer& flush,
+Measurement measure_public(Launch&& launch, CacheState cache, bench::L2FlushBuffer& flush,
                            cudaStream_t stream, int warmup, int repeat, bool graph) {
     if (graph) {
         bench::TimedGraph captured;
@@ -218,7 +218,7 @@ Measurement measure_public(Launch&& launch, CacheState cache, DeviceBuffer& flus
 
 template <class Launch>
 void profile_public(Launch&& launch, const char* format, const char* policy, CacheState cache,
-                    DeviceBuffer& flush, cudaStream_t stream, int warmup, bool graph) {
+                    bench::L2FlushBuffer& flush, cudaStream_t stream, int warmup, bool graph) {
     bench::TimedGraph captured;
     if (graph) { captured.capture(stream, launch); }
     const auto invoke = [&] {
@@ -276,7 +276,8 @@ template <class WorkspaceCapacity, class Launch>
 void measure_points(const Options& options, const char* format, const char* policy,
                     std::int32_t hidden, std::int32_t output_rows, std::uint64_t weight_bytes,
                     WorkspaceCapacity&& workspace_capacity, Launch&& make_launch,
-                    DeviceBuffer& flush, cudaStream_t stream, std::vector<Result>& results) {
+                    bench::L2FlushBuffer& flush, cudaStream_t stream,
+                    std::vector<Result>& results) {
     const CacheState profile_cache =
         options.cache == CacheMode::Cold ? CacheState::Cold : CacheState::Warm;
     for (const std::int32_t tokens : options.tokens) {
@@ -303,7 +304,7 @@ void measure_points(const Options& options, const char* format, const char* poli
     }
 }
 
-void run_q4q5(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+void run_q4q5(const Options& options, bench::L2FlushBuffer& flush, cudaStream_t stream,
               std::vector<Result>& results) {
     constexpr std::int32_t kHidden     = 5120;
     constexpr std::int32_t kQkRows     = 4096;
@@ -332,7 +333,7 @@ void run_q4q5(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
         [](std::int32_t) { return std::size_t{0}; }, make_launch, flush, stream, results);
 }
 
-void run_q8(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+void run_q8(const Options& options, bench::L2FlushBuffer& flush, cudaStream_t stream,
             std::vector<Result>& results) {
     constexpr std::int32_t kHidden     = 2048;
     constexpr std::int32_t kQkvRows    = 8192;
@@ -360,7 +361,7 @@ void run_q8(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
                    workspace_capacity, make_launch, flush, stream, results);
 }
 
-void run_nvfp4(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+void run_nvfp4(const Options& options, bench::L2FlushBuffer& flush, cudaStream_t stream,
                std::vector<Result>& results) {
     constexpr std::int32_t kHidden     = 5120;
     constexpr std::int32_t kQkvRows    = 10240;
@@ -392,7 +393,7 @@ void run_nvfp4(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
                    results);
 }
 
-void run_fp8(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+void run_fp8(const Options& options, bench::L2FlushBuffer& flush, cudaStream_t stream,
              std::vector<Result>& results) {
     constexpr std::int32_t kHidden     = 5120;
     constexpr std::int32_t kQkvRows    = 10240;
@@ -458,7 +459,7 @@ int main(int argc, char** argv) {
         const Options options = parse_options(argc, argv);
         cudaStream_t stream   = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
+        bench::L2FlushBuffer flush(kFlushBytes);
         std::vector<Result> results;
 
         if (selected(options.format, Format::Q4Q5)) { run_q4q5(options, flush, stream, results); }

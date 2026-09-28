@@ -543,7 +543,7 @@ private:
     bench::PackedQuantizedWeight routed_down_;
     bench::PackedQuantizedWeight shared_gate_;
     bench::PackedQuantizedWeight shared_down_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
     ops::SparseMoeWeights weights_{};
 };
 

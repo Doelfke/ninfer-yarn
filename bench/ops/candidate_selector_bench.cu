@@ -157,7 +157,7 @@ struct Fixture {
 };
 
 void run(std::int32_t batch_size, Mode mode, const Options& options, Fixture& fixture,
-         DeviceBuffer& flush, cudaStream_t stream) {
+         bench::L2FlushBuffer& flush, cudaStream_t stream) {
     fixture.set_mode(mode, batch_size);
     Tensor ids;
     Tensor unary;
@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         const Options options = parse_options(argc, argv);
-        DeviceBuffer flush(options.flush_bytes);
+        bench::L2FlushBuffer flush(options.flush_bytes);
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         int device = 0;

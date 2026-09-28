@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        ninfer::DeviceBuffer flush(kFlushBytes);
+        ninfer::bench::L2FlushBuffer flush(kFlushBytes);
         ninfer::DeviceBuffer input =
             bench::make_bf16(static_cast<std::size_t>(options.hidden) * max_t, 101U);
         ninfer::DeviceBuffer residual =

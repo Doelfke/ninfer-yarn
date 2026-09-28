@@ -44,12 +44,14 @@ constexpr double kRtx5090DramGBs          = 1792.0;
 constexpr double kRtx5090SustainedReadGBs = 1674.5;
 // NVIDIA's GB202 table reports dense/sparse pairs at boost clock. Keep input and accumulator
 // precision explicit for the qualified Tensor Core routes below.
-constexpr double kRtx5090Fp8Fp16AccumulateTFLOPs  = 838.0;
-constexpr double kRtx5090Fp8Fp32AccumulateTFLOPs  = 419.0;
-constexpr double kRtx5090Bf16Fp32AccumulateTFLOPs = 209.5;
-constexpr std::uint64_t kDefaultFlushBytes        = 256ULL << 20;
-constexpr int kDefaultWarmup                      = 3;
-constexpr int kDefaultRepeat                      = 20;
+constexpr double kRtx5090Fp8Fp16AccumulateTFLOPs = 838.0;
+constexpr double kRtx5090Fp8Fp32AccumulateTFLOPs = 419.0;
+// Unit-scale block-scaled FP8 uses the full-rate FP32 accumulation path on RTX 5090.
+constexpr double kRtx5090MxFp8Fp32AccumulateTFLOPs = 838.0;
+constexpr double kRtx5090Bf16Fp32AccumulateTFLOPs  = 209.5;
+constexpr std::uint64_t kDefaultFlushBytes         = 256ULL << 20;
+constexpr int kDefaultWarmup                       = 3;
+constexpr int kDefaultRepeat                       = 20;
 
 enum class TClass : std::uint8_t {
     Continuous,
@@ -202,12 +204,6 @@ std::uint64_t align_up(std::uint64_t value, std::uint64_t alignment) {
     if (alignment == 0) { throw std::invalid_argument("alignment must be positive"); }
     return checked_mul((checked_add(value, alignment - 1, "aligned size") / alignment), alignment,
                        "aligned size");
-}
-
-int launch_grid(std::uint64_t elements) {
-    constexpr int block        = 256;
-    const std::uint64_t blocks = (elements + block - 1) / block;
-    return static_cast<int>(std::max<std::uint64_t>(1, std::min<std::uint64_t>(blocks, 65535)));
 }
 
 std::string lower(std::string_view text) {
@@ -557,12 +553,12 @@ double registered_tensor_peak_tflops(const BenchPoint& point, const char*& profi
     const bool fp8_tensor_route =
         (point.n == 14336 && point.k == 5120 && point.t >= 12) ||
         (point.n == 16384 && point.k == 5120 && point.t >= 11) ||
-        (point.n == 34816 && point.k == 5120 && (point.t == 1 || point.t >= 5)) ||
+        (point.n == 34816 && point.k == 5120 && point.t >= 5) ||
         (point.n == 5120 && (point.k == 6144 || point.k == 17408) && point.t >= 25);
     if (point.qtype == QType::FP8_E4M3FN_ROW_BF16 && point.policy == LinearPolicy::AllowA8 &&
         fp8_problem && fp8_tensor_route) {
-        profile = "FP8_F32ACC";
-        return kRtx5090Fp8Fp32AccumulateTFLOPs;
+        profile = "MXFP8_F32ACC";
+        return kRtx5090MxFp8Fp32AccumulateTFLOPs;
     }
     if (point.qtype == QType::BF16 && point.policy == LinearPolicy::A16Only && point.n == 256 &&
         point.k == 5120) {
@@ -624,8 +620,8 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
     return result;
 }
 
-std::vector<Result> run_group(const PointGroup& group, const Options& opt, DeviceBuffer& flush,
-                              cudaStream_t stream) {
+std::vector<Result> run_group(const PointGroup& group, const Options& opt,
+                              bench::L2FlushBuffer& flush, cudaStream_t stream) {
     const std::int32_t max_t =
         std::max_element(group.points.begin(), group.points.end(),
                          [](const BenchPoint& a, const BenchPoint& b) { return a.t < b.t; })
@@ -689,7 +685,7 @@ std::vector<Result> run_group(const PointGroup& group, const Options& opt, Devic
     return results;
 }
 
-void run_profile(const BenchPoint& point, const Options& opt, DeviceBuffer& flush,
+void run_profile(const BenchPoint& point, const Options& opt, bench::L2FlushBuffer& flush,
                  cudaStream_t stream) {
     const std::uint64_t x_elements =
         checked_mul(static_cast<std::uint64_t>(point.k), point.t, "activation allocation");
@@ -757,8 +753,9 @@ void print_header(const Options& opt) {
     std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=%s\n", kRtx5090DramGBs,
                 kRtx5090SustainedReadGBs,
                 opt.graph_calls == 1 ? "cold" : "cold-before-graph-bundle");
-    std::printf("# dense_fp8_tensor_tflops fp16_acc=%.1f fp32_acc=%.1f\n",
-                kRtx5090Fp8Fp16AccumulateTFLOPs, kRtx5090Fp8Fp32AccumulateTFLOPs);
+    std::printf("# dense_fp8_tensor_tflops fp16_acc=%.1f fp32_acc=%.1f mxfp8_fp32_acc=%.1f\n",
+                kRtx5090Fp8Fp16AccumulateTFLOPs, kRtx5090Fp8Fp32AccumulateTFLOPs,
+                kRtx5090MxFp8Fp32AccumulateTFLOPs);
     std::printf("# dense_bf16_tensor_tflops fp32_acc=%.1f\n", kRtx5090Bf16Fp32AccumulateTFLOPs);
 }
 
@@ -857,7 +854,7 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(opt.flush_bytes);
+        bench::L2FlushBuffer flush(opt.flush_bytes);
         const std::vector<BenchPoint> points = expand_points(opt);
 
         print_header(opt);

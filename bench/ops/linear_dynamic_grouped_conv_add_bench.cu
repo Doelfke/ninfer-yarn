@@ -83,7 +83,7 @@ Options parse_args(int argc, char** argv) {
     return options;
 }
 
-void run_profile(std::int32_t input_rows, const Options& options, DeviceBuffer& flush,
+void run_profile(std::int32_t input_rows, const Options& options, bench::L2FlushBuffer& flush,
                  cudaStream_t stream) {
     DeviceBuffer input = make_bf16(static_cast<std::size_t>(input_rows) * kMaximumWidth * 8, 101U);
     DeviceBuffer base  = make_bf16(static_cast<std::size_t>(kHidden) * kTaps * kSides, 103U);
@@ -146,7 +146,7 @@ int main(int argc, char** argv) {
     }
     try {
         const Options options = parse_args(argc, argv);
-        DeviceBuffer flush(options.flush_bytes);
+        bench::L2FlushBuffer flush(options.flush_bytes);
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         std::printf("C,W,B,T,route,median_us,min_us,p95_us,effective_tflops,effective_gbs,"

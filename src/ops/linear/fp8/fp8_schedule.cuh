@@ -1,6 +1,7 @@
 #pragma once
 #include "ops/linear/fp8/fp8_geometry.h"
 #include "ops/common/memory.cuh"
+#include <cstddef>
 #include <cuda_bf16.h>
 
 namespace ninfer::ops::detail {
@@ -127,6 +128,7 @@ template <int BlockTokens, int BlockRows, int BlockK, int WarpsTokens, int Warps
           int MinBlocksPerSm, Cache WeightCache, Cache ActivationCache,
           Fp8MmaFragmentPipeline FragmentPipeline, Fp8MmaRaster Raster, int RasterGroupRows = 1>
 struct Fp8A8MmaSchedule {
+    static constexpr bool kTmaSwizzle                         = false;
     static constexpr int kStaticK                             = 0;
     static constexpr int kBlockTokens                         = BlockTokens;
     static constexpr int kBlockRows                           = BlockRows;
@@ -166,6 +168,43 @@ struct Fp8A8MmaSchedule {
     static_assert(kRaster != Fp8MmaRaster::Grouped || kRasterGroupRows > 0);
 };
 
+template <int BlockTokens, int BlockRows, int BlockK, int WarpsTokens, int WarpsRows, int Stages,
+          int MinBlocksPerSm, Fp8MmaRaster Raster = Fp8MmaRaster::TokenFast,
+          int RasterGroupRows = 1>
+struct Fp8A8TmaMmaSchedule
+    : Fp8A8MmaSchedule<BlockTokens, BlockRows, BlockK, WarpsTokens, WarpsRows, Stages,
+                       MinBlocksPerSm, Cache::cg, Cache::cg, Fp8MmaFragmentPipeline::PingPong,
+                       Raster, RasterGroupRows> {
+    using Base = Fp8A8MmaSchedule<BlockTokens, BlockRows, BlockK, WarpsTokens, WarpsRows, Stages,
+                                  MinBlocksPerSm, Cache::cg, Cache::cg,
+                                  Fp8MmaFragmentPipeline::PingPong, Raster, RasterGroupRows>;
+    static constexpr bool kTmaSwizzle     = true;
+    static constexpr int kProducerThreads = 32;
+    static constexpr int kConsumerWarps   = Base::kWarps;
+    static constexpr int kThreads         = kProducerThreads + Base::kThreads;
+    static constexpr int kStorageBytes    = Base::kSharedBytes;
+    static constexpr int kBarrierBytes    = Stages * 2 * sizeof(std::uint64_t);
+    static constexpr int kSharedBytes     = kStorageBytes + kBarrierBytes;
+    static constexpr int kSplitWaveCtas   = 0;
+    static constexpr int kReductionBlocks = 1;
+    static_assert(BlockK == 64 || BlockK == 128);
+    static_assert(BlockTokens <= 256 && BlockRows <= 256);
+    static_assert(kThreads <= 1024 && kSharedBytes <= 99 * 1024);
+};
+
+// Split only an underfilled final wave. Earlier CTAs keep the full K loop and
+// write their final outputs directly. WaveCtas describes the tuned resident grid.
+template <class TmaSchedule, int WaveCtas, int MaxParts, int ReductionBlocks>
+struct Fp8A8TmaSplitKSchedule : TmaSchedule {
+    static constexpr int kSplitWaveCtas   = WaveCtas;
+    static constexpr int kMaxParts        = MaxParts;
+    static constexpr int kReductionBlocks = ReductionBlocks;
+    static constexpr std::size_t kPartialBytes =
+        std::size_t(WaveCtas) * TmaSchedule::kBlockTokens * TmaSchedule::kBlockRows * sizeof(float);
+    static_assert(WaveCtas > 0 && MaxParts >= 2 && ReductionBlocks > 0);
+    static_assert((TmaSchedule::kBlockTokens * TmaSchedule::kBlockRows) % (ReductionBlocks * 2) ==
+                  0);
+};
 
 enum class Fp8ActivationStage : std::uint8_t { ActiveOnly, PaddedZero };
 

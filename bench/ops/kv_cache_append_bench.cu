@@ -573,8 +573,8 @@ double prefix_useful_bytes(std::int32_t committed, std::int32_t batch) {
 
 template <class Case>
 bench::ColdTiming measure(Case& data, Execution execution, CacheState cache,
-                          bench::TimedGraph* graph, DeviceBuffer& flush, cudaStream_t stream,
-                          int warmup, int repeat) {
+                          bench::TimedGraph* graph, bench::L2FlushBuffer& flush,
+                          cudaStream_t stream, int warmup, int repeat) {
     if (execution == Execution::Eager) {
         const auto launch = [&](cudaStream_t launch_stream) { data.launch(launch_stream); };
         return cache == CacheState::Cold
@@ -628,8 +628,8 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
 }
 
 template <class Case>
-void profile_case(Case& data, const char* label, const Options& options, DeviceBuffer& flush,
-                  cudaStream_t stream) {
+void profile_case(Case& data, const char* label, const Options& options,
+                  bench::L2FlushBuffer& flush, cudaStream_t stream) {
     const Execution execution = options.execution;
     const CacheState cache = options.cache == CacheMode::Cold ? CacheState::Cold : CacheState::Warm;
     const bool empty       = options.mode == Mode::Prefix && options.max_count == 0;
@@ -680,7 +680,7 @@ void collect_case(Case& data, Mode mode, const char* geometry, KvCacheStorage st
                   const char* layout, std::int32_t batch, std::int32_t cyclic_capacity,
                   std::int32_t tokens, std::int32_t committed, double logical_cache_bytes,
                   double key_vector_bytes, double value_vector_bytes, double physical_cache_bytes,
-                  double useful_bytes, const Options& options, DeviceBuffer& flush,
+                  double useful_bytes, const Options& options, bench::L2FlushBuffer& flush,
                   cudaStream_t stream, std::vector<Result>& results) {
     const bool empty = mode == Mode::Prefix && options.max_count == 0;
     bench::TimedGraph graph;
@@ -749,7 +749,7 @@ int main(int argc, char** argv) {
         const Options options = parse_options(argc, argv);
         cudaStream_t stream   = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
+        bench::L2FlushBuffer flush(kFlushBytes);
         const std::vector<FullGeometry> geometries = selected_geometries(options.full_geometry);
         const std::vector<KvCacheStorage> storages = selected_storages(options.kv);
 

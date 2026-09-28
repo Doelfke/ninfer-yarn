@@ -207,7 +207,7 @@ const char* policy_name(ops::LinearPolicy policy) {
 }
 
 template <class Launch>
-Measurement measure_public(Launch&& launch, CacheState cache, DeviceBuffer& flush,
+Measurement measure_public(Launch&& launch, CacheState cache, bench::L2FlushBuffer& flush,
                            cudaStream_t stream, int warmup, int repeat, bool graph) {
     if (graph) {
         bench::TimedGraph captured;
@@ -226,7 +226,7 @@ Measurement measure_public(Launch&& launch, CacheState cache, DeviceBuffer& flus
 
 template <class Launch>
 void profile_public(Launch&& launch, const char* format, const char* policy, CacheState cache,
-                    DeviceBuffer& flush, cudaStream_t stream, int warmup, bool graph) {
+                    bench::L2FlushBuffer& flush, cudaStream_t stream, int warmup, bool graph) {
     bench::TimedGraph captured;
     if (graph) captured.capture(stream, launch);
     const auto invoke = [&] {
@@ -289,7 +289,7 @@ std::uint64_t tensor_bytes(std::int32_t rows, std::int32_t tokens) {
     return static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(tokens) * 2ULL;
 }
 
-void run_q4q5(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+void run_q4q5(const Options& options, bench::L2FlushBuffer& flush, cudaStream_t stream,
               std::vector<Result>& results) {
     constexpr std::int32_t hidden      = 5120;
     constexpr std::int32_t q_rows      = 6144;
@@ -340,7 +340,7 @@ template <class WeightFixture>
 void run_four_output(const Options& options, const char* format, QType qtype,
                      ops::LinearPolicy policy, bool implicit_a16_entry, std::int32_t hidden,
                      std::int32_t q_rows, std::int32_t kv_rows, std::int32_t parent_rows,
-                     WeightFixture& fixture, DeviceBuffer& flush, cudaStream_t stream,
+                     WeightFixture& fixture, bench::L2FlushBuffer& flush, cudaStream_t stream,
                      std::vector<Result>& results) {
     const std::int32_t min_tokens = *std::min_element(options.tokens.begin(), options.tokens.end());
     const std::int32_t max_tokens = *std::max_element(options.tokens.begin(), options.tokens.end());
@@ -393,8 +393,8 @@ void run_four_output(const Options& options, const char* format, QType qtype,
     }
 }
 
-void run_q8_qkv(const Options& options, const char* label, std::int32_t hidden, DeviceBuffer& flush,
-                cudaStream_t stream, std::vector<Result>& results) {
+void run_q8_qkv(const Options& options, const char* label, std::int32_t hidden,
+                bench::L2FlushBuffer& flush, cudaStream_t stream, std::vector<Result>& results) {
     constexpr std::int32_t q_rows      = 4096;
     constexpr std::int32_t kv_rows     = 1024;
     constexpr std::int32_t parent_rows = 6144;
@@ -434,7 +434,7 @@ void run_q8_qkv(const Options& options, const char* label, std::int32_t hidden, 
     }
 }
 
-void run_fp8(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+void run_fp8(const Options& options, bench::L2FlushBuffer& flush, cudaStream_t stream,
              std::vector<Result>& results) {
     auto weight = bench::make_fp8_weight(14336, 5120);
     auto* data  = static_cast<std::uint8_t*>(weight.storage.p);
@@ -484,7 +484,7 @@ int main(int argc, char** argv) {
                     CUDART_VERSION);
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
+        bench::L2FlushBuffer flush(kFlushBytes);
         std::vector<Result> results;
 
         if (selected(options.format, Format::Q4Q5)) { run_q4q5(options, flush, stream, results); }

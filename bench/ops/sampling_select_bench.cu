@@ -407,7 +407,7 @@ void run_dflash2(DeviceBuffer& logits, DeviceBuffer& counts, const Options& opti
     graph.capture(stream, [&](cudaStream_t s) {
         for (int i = 0; i < options.graph_calls; ++i) launch(s);
     });
-    DeviceBuffer flush(kFlushBytes);
+    bench::L2FlushBuffer flush(kFlushBytes);
     const ColdTiming timing =
         measure_cold_graph(graph, flush, stream, options.warmup, options.repeat);
     CUDA_CHECK(cudaStreamDestroy(stream));

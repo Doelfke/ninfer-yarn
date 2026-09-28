@@ -219,7 +219,8 @@ void print(Profile p, int t, int b, const char* stage, int tile, std::size_t ws,
     }
 }
 
-void run(Profile p, int t, int b, const Options& o, DeviceContext& ctx, DeviceBuffer& flush) {
+void run(Profile p, int t, int b, const Options& o, DeviceContext& ctx,
+         bench::L2FlushBuffer& flush) {
     if (!kda::valid_heads(p.qk, p.value))
         throw std::invalid_argument("require Hqk>0, Hv>=Hqk, Hv%Hqk=0");
     const auto ws_bytes = ops::kimi_delta_attention_workspace_capacity_bytes(p.qk, p.value, t, t);
@@ -279,7 +280,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         DeviceContext ctx;
-        DeviceBuffer flush(o.flush);
+        bench::L2FlushBuffer flush(o.flush);
         if (o.csv)
             std::puts("profile,qk_heads,value_heads,tokens,batch,stage,value_tile,workspace_bytes,"
                       "logical_bytes,workspace_write_bytes,workspace_read_request_bytes,tensor_io_"

@@ -20,8 +20,9 @@ The shared generators live in `common/fixture_data.cuh` and `ops/quantized_weigh
 
 Initialization and restoration are outside timed regions. In-place Ops restore their initial
 operands before each sample, warmup, and profile call; their timed graphs contain one Op rather
-than repeatedly transforming the same data. Cold measurements restore first, then evict L2 with
-nonrepeating data. These changes establish a new input/timing baseline: older constant or periodic
+than repeatedly transforming the same data. Cold measurements restore first, then evict L2 by
+reading a preinitialized nonrepeating buffer; eviction must not leave a large dirty writeback
+workload. These changes establish a new input/timing baseline: older constant or periodic
 fixtures and repeated in-place chains are not directly comparable. Compare implementations using
 the same fixture, seed, cache policy, and timing mode.
 
@@ -276,13 +277,14 @@ calls reuse cached inputs. These rows are labeled `cold-before-graph-bundle` and
 percentages and the DRAM memory floor. Multiple calls are for timing and cannot be combined with
 `--profile`, which always captures one complete public call.
 
-Every ordinary sample is cold-cache: a 256 MiB L2 eviction write completes before the timed
+Every ordinary sample is cold-cache: a 256 MiB L2 eviction read completes before the timed
 interval. Reported effective bandwidth uses the encoded weight planes once, one BF16 activation
 read, and one BF16 output write. Reported FLOPs are the mathematical `2*N*K*T`; neither metric
 copies route-private tile, replay, padding, split, schedule, host-launcher, or kernel-instance
-behavior. The fixed RTX 5090 memory reference is `1792 GB/s` DRAM bandwidth. Because `AllowA4` is
-a permission rather than an execution-profile label, the long-lived benchmark does not infer or
-report private activation compute or Tensor Core utilization. `READ_%` additionally compares the same one-read model
+behavior. The fixed RTX 5090 memory reference is `1792 GB/s` DRAM bandwidth. Tensor Core utilization
+is reported only for registered shape/policy/extent combinations with a known MMA profile; the
+activation policy alone does not identify that profile. MXFP8 with FP32 accumulation uses the
+`838 TFLOP/s` dense reference. `READ_%` additionally compares the same one-read model
 bytes with the measured `1674.5 GB/s` pure-read ceiling from `tools/hbm_bandwidth_probe.cu`; it is
 the practical utilization measure for read-dominated points. Physical traffic and instruction
 utilization still require NCU.
@@ -295,7 +297,7 @@ Q8 and row-FP8 full heads and the mapped Q4 optimized head. Its independent matr
 positive `--columns U` also exercises larger matrices; `--columns U,...` selects a representative
 set without a full sweep. Codes and stored scales vary across the physical head, including signs,
 so ranking is not timed only on identical weight rows. Each sample replays the complete Op in a
-CUDA Graph after a 256 MiB L2 eviction write; projection, partial-key reduction, workspace counter
+CUDA Graph after a 256 MiB L2 eviction read; projection, partial-key reduction, workspace counter
 initialization, and final ids/scores publication are included. Defaults are 8 warmups and 60 samples.
 Reported logical bandwidth counts the encoded head once, useful FLOPs count candidate-eligible rows, and
 workspace bytes and Graph nodes describe the actual public call. These are Op measurements.
@@ -314,7 +316,7 @@ cmake --build build -j --target ninfer_linear_topk_bench
 `ninfer_candidate_selector_bench` measures the complete public conditional selector for
 `K=1..15`, `B=1..8`, 16 candidates and rank 256, with full BF16 codebooks `[256,248320]`.
 The default sweep covers all K/B pairs in greedy, stochastic and mixed modes (B=1 omits the
-redundant mixed case). Each cold-cache CUDA Graph sample follows a 256 MiB L2 eviction write.
+redundant mixed case). Each cold-cache CUDA Graph sample follows a 256 MiB L2 eviction read.
 It reports the selected route's required caller workspace and actual Graph node count. The timed
 interval includes all device work of the complete public Op; fixture allocation and setup are outside it.
 
@@ -605,7 +607,8 @@ the benchmark therefore does not infer Tensor Core utilization from a storage-fo
 Use ordinary benchmark latency `t`, not profiler replay duration, for effective roofline fractions:
 `unique_kv_bytes / (t * peak_bandwidth)` and
 `(qk_flops / peak_qk_ops + pv_flops / peak_pv_ops) / t`, with consistent units and explicitly stated
-hardware peaks. Current INT8 QK uses native INT8, FP8/K8V4 QK uses native FP8, and BF16/NVFP4 QK
+hardware peaks. Current INT8 QK uses native INT8, FP8/K8V4 QK uses unit-scale MXFP8
+(838 TFLOP/s at the RTX 5090 reference boost clock), and BF16/NVFP4 QK
 and all PV use 16-bit Tensor Core throughput references. In particular, NVFP4 KV storage does not
 imply native FP4 QK. These useful-work fractions differ from profiler pipeline activity and actual
 DRAM traffic; use targeted profiling to explain the remaining gap.
@@ -781,7 +784,7 @@ cmake --build build --parallel --target ninfer_nvfp4_linear_swiglu_bench
 `ninfer_fp8_linear_swiglu_bench` measures the public row-scaled FP8 `[34816,5120] ->
 [17408,T]` profile. `--policy a8` measures the production resolver, including caller-owned
 activation workspace and the fused SwiGLU output; `--policy a16` measures the public A16 form.
-The Tensor Core percentage uses the RTX 5090 dense FP8/FP32-accumulate reference of 419 TFLOP/s
+The Tensor Core percentage uses the RTX 5090 dense MXFP8/FP32-accumulate reference of 838 TFLOP/s
 only for extents that the production resolver sends to A8.
 
 ```bash
@@ -855,7 +858,7 @@ including activation quantization, caller-owned workspace, contraction, residual
 in-place BF16 write. `--policy a8` follows the independent production resolver of the selected
 semantic Op: `[5120,6144]` uses A16 below `T=22`, while `[5120,17408]` uses A16 below `T=25`; larger
 extents use FP8/FP32-accumulate Tensor Core contraction. `TC_%` is reported only when that A8 route
-actually executes, against the RTX 5090 419 TFLOP/s reference.
+actually executes, against the RTX 5090 unit-scale MXFP8/FP32-accumulate 838 TFLOP/s reference.
 
 ```bash
 cmake --build build --parallel --target ninfer_fp8_linear_add_bench

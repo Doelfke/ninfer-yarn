@@ -27,9 +27,9 @@ using namespace ninfer;
 
 namespace {
 
-constexpr std::int32_t kRows            = 5120;
-constexpr std::size_t kFlushBytes       = 256ULL << 20;
-constexpr double kFp8Fp32AccumulatePeak = 419.0;
+constexpr std::int32_t kRows              = 5120;
+constexpr std::size_t kFlushBytes         = 256ULL << 20;
+constexpr double kMxFp8Fp32AccumulatePeak = 838.0;
 
 struct Options {
     std::int32_t k           = 0;
@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
+        bench::L2FlushBuffer flush(kFlushBytes);
         DeviceBuffer input    = bench::make_bf16(static_cast<std::size_t>(options.k) * max_t, 101U);
         DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(kRows) * max_t, 103U);
         bench::SavedBuffer residual_initial(residual);
@@ -198,7 +198,8 @@ int main(int argc, char** argv) {
 
         std::vector<Result> results;
         results.reserve(options.t_sweep.size());
-        std::printf("# fp8_fp32_accumulate_peak_tflops=%.1f cache=cold\n", kFp8Fp32AccumulatePeak);
+        std::printf("# mxfp8_fp32_accumulate_peak_tflops=%.1f cache=cold\n",
+                    kMxFp8Fp32AccumulatePeak);
         std::printf("%-4s %8s %8s %6s %11s %11s %11s %10s %10s %8s\n", "pol", "N", "K", "T",
                     "median_us", "min_us", "p95_us", "eff_GB/s", "TFLOP/s", "TC_%");
         for (const std::int32_t tokens : options.t_sweep) {
@@ -212,7 +213,7 @@ int main(int argc, char** argv) {
                                  4.0 * static_cast<double>(kRows) * tokens;
             const double tflops         = flops / seconds / 1.0e12;
             const double tensor_percent = uses_tensor_cores(options, tokens)
-                                              ? 100.0 * tflops / kFp8Fp32AccumulatePeak
+                                              ? 100.0 * tflops / kMxFp8Fp32AccumulatePeak
                                               : std::numeric_limits<double>::quiet_NaN();
             if (std::isfinite(tensor_percent)) {
                 std::printf("%-4s %8d %8d %6d %11.3f %11.3f %11.3f %10.1f %10.2f %8.2f\n",

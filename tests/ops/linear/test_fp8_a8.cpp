@@ -16,6 +16,7 @@ int run_fp8_a8() {
         Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
         Invocation{64, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{1023, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
     };
@@ -29,15 +30,38 @@ int run_fp8_a8() {
     };
     failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
                           {16384, 5120, 839U, Comparison::Sampled, true, gdn_invocations});
-    constexpr std::array mlp_invocations{
+    constexpr std::array mlp_decode_invocations{
         Invocation{1, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{2, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{3, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+    };
+    failures += run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
+                          {34816, 5120, 851U, Comparison::Sampled, true, mlp_decode_invocations});
+    constexpr std::array mlp_invocations{
         Invocation{5, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
         Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
     };
     failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
                           {34816, 5120, 853U, Comparison::Sampled, true, mlp_invocations});
+
+    constexpr std::array mlp_bulk_invocations{
+        Invocation{129, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{192, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{193, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{256, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{257, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{511, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{512, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{513, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{1025, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{2048, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
+                          {34816, 5120, 863U, Comparison::Sampled, true, mlp_bulk_invocations});
 
     constexpr std::array residual6144_invocations{
         Invocation{25, CallForm::Policy, ops::LinearPolicy::AllowA8},
@@ -66,7 +90,7 @@ int run_fp8_a8() {
 
     for (const Problem problem :
          {Problem{14336, 5120, false, false}, Problem{16384, 5120, false, false},
-          Problem{34816, 5120, true, false}, Problem{5120, 6144, false, false},
+          Problem{34816, 5120, false, false}, Problem{5120, 6144, false, false},
           Problem{5120, 17408, false, false}}) {
         const std::size_t one = ops::linear_workspace_capacity_bytes(
             QType::FP8_E4M3FN_ROW_BF16, problem.rows, problem.input_rows,

@@ -203,13 +203,69 @@ inline ColdTiming measure_graph(const TimedGraph& graph, cudaStream_t stream, in
     return summarize_timings(std::move(samples));
 }
 
-inline void flush_l2(DeviceBuffer& flush, cudaStream_t stream) {
-    // Write nonrepeating cache lines across the caller-owned eviction buffer.
-    CUDA_CHECK(fixture::fill_bytes(flush.p, flush.bytes, 0x4c324576696374ULL, stream));
+namespace detail {
+inline constexpr int kEvictionBlocks  = 1024;
+inline constexpr int kEvictionThreads = 256;
+
+static __global__ void read_eviction_buffer(const uint4* input, std::size_t vectors,
+                                            uint4* checksums) {
+    uint4 value{};
+    for (auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x; i < vectors;
+         i += std::size_t(gridDim.x) * blockDim.x) {
+        const uint4 loaded = input[i];
+        value.x ^= loaded.x;
+        value.y ^= loaded.y;
+        value.z ^= loaded.z;
+        value.w ^= loaded.w;
+    }
+    for (int offset = 16; offset; offset >>= 1) {
+        value.x ^= __shfl_xor_sync(0xffffffffU, value.x, offset);
+        value.y ^= __shfl_xor_sync(0xffffffffU, value.y, offset);
+        value.z ^= __shfl_xor_sync(0xffffffffU, value.z, offset);
+        value.w ^= __shfl_xor_sync(0xffffffffU, value.w, offset);
+    }
+    __shared__ uint4 warps[kEvictionThreads / 32];
+    if (threadIdx.x % 32 == 0) warps[threadIdx.x / 32] = value;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        uint4 total{};
+        for (const auto& partial : warps) {
+            total.x ^= partial.x;
+            total.y ^= partial.y;
+            total.z ^= partial.z;
+            total.w ^= partial.w;
+        }
+        checksums[blockIdx.x] = total;
+    }
 }
+} // namespace detail
+
+// Reading a preinitialized buffer evicts cache lines without leaving an L2-sized dirty
+// working set whose writeback would become part of the next measured Op's traffic.
+class L2FlushBuffer : public DeviceBuffer {
+public:
+    explicit L2FlushBuffer(std::size_t bytes)
+        : DeviceBuffer(bytes), checksums_(detail::kEvictionBlocks * sizeof(uint4)) {
+        CUDA_CHECK(fixture::fill_bytes(p, bytes, 0x4c324576696374ULL));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    void evict(cudaStream_t stream) {
+        detail::
+            read_eviction_buffer<<<detail::kEvictionBlocks, detail::kEvictionThreads, 0, stream>>>(
+                static_cast<const uint4*>(p), bytes / sizeof(uint4),
+                static_cast<uint4*>(checksums_.p));
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+private:
+    DeviceBuffer checksums_;
+};
+
+inline void flush_l2(L2FlushBuffer& flush, cudaStream_t stream) { flush.evict(stream); }
 
 template <class Launch>
-ColdTiming measure_cold_launch(Launch&& launch, DeviceBuffer& flush, cudaStream_t stream,
+ColdTiming measure_cold_launch(Launch&& launch, L2FlushBuffer& flush, cudaStream_t stream,
                                int warmup, int repeat) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument(
@@ -251,7 +307,7 @@ ColdTiming measure_cold_launch(Launch&& launch, DeviceBuffer& flush, cudaStream_
     };
 }
 
-inline ColdTiming measure_cold_graph(const TimedGraph& graph, DeviceBuffer& flush,
+inline ColdTiming measure_cold_graph(const TimedGraph& graph, L2FlushBuffer& flush,
                                      cudaStream_t stream, int warmup, int repeat) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument(
@@ -320,7 +376,7 @@ ColdTiming measure_graph_prepared(Prepare&& prepare, const TimedGraph& graph, cu
 // the same initial value before every warmup launch and every sample, so each timed call sees the
 // same operand; prepare and the L2 flush both run outside the timed interval.
 template <class Prepare, class Launch>
-ColdTiming measure_cold_launch_prepared(Prepare&& prepare, Launch&& launch, DeviceBuffer& flush,
+ColdTiming measure_cold_launch_prepared(Prepare&& prepare, Launch&& launch, L2FlushBuffer& flush,
                                         cudaStream_t stream, int warmup, int repeat) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument(
@@ -360,7 +416,7 @@ ColdTiming measure_cold_launch_prepared(Prepare&& prepare, Launch&& launch, Devi
 
 template <class Prepare>
 ColdTiming measure_cold_graph_prepared(Prepare&& prepare, const TimedGraph& graph,
-                                       DeviceBuffer& flush, cudaStream_t stream, int warmup,
+                                       L2FlushBuffer& flush, cudaStream_t stream, int warmup,
                                        int repeat) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument(

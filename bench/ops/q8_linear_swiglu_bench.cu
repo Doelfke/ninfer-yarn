@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
                     context.props.major, context.props.minor, CUDART_VERSION);
         const auto [minimum, maximum] =
             std::minmax_element(options.t_sweep.begin(), options.t_sweep.end());
-        DeviceBuffer flush(kFlushBytes);
+        bench::L2FlushBuffer flush(kFlushBytes);
         DeviceBuffer input =
             bench::make_bf16(static_cast<std::size_t>(problem.hidden) * (*maximum), 101U);
         DeviceBuffer output(static_cast<std::size_t>(problem.output_rows) * (*maximum) * 2);

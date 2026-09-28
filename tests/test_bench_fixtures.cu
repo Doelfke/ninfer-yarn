@@ -117,7 +117,7 @@ void float_and_timing_fixtures() {
     CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     qb::TimedGraph graph;
     graph.capture(stream, launch);
-    DeviceBuffer flush(4099);
+    qb::L2FlushBuffer flush(4099);
     const auto check = [&] {
         float output;
         CUDA_CHECK(cudaMemcpy(&output, state.p, sizeof(float), cudaMemcpyDeviceToHost));

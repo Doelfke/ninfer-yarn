@@ -493,8 +493,8 @@ private:
 };
 
 Measurement measure_fold(const FoldResources& resources,
-                         const std::vector<ops::GdnReplayFoldRow>& rows, DeviceBuffer& flush,
-                         int warmup, int repeat) {
+                         const std::vector<ops::GdnReplayFoldRow>& rows,
+                         bench::L2FlushBuffer& flush, int warmup, int repeat) {
     cudaStream_t stream = nullptr;
     const auto launch   = [&](cudaStream_t launch_stream) {
         resources.fold_plan().execute(rows, launch_stream);
@@ -509,7 +509,8 @@ Measurement measure_fold(const FoldResources& resources,
 }
 
 template <class Launch>
-Measurement measure_component(Launch&& launch, DeviceBuffer& flush, int warmup, int repeat) {
+Measurement measure_component(Launch&& launch, bench::L2FlushBuffer& flush, int warmup,
+                              int repeat) {
     cudaStream_t stream = nullptr;
     Measurement result;
     result.warm           = bench::measure_launch(launch, stream, warmup, repeat);
@@ -528,7 +529,8 @@ void print_recurrent_result(const Profile& profile, std::int32_t width, std::int
 }
 
 void run_recurrent_point(const Profile& profile, std::int32_t width, std::int32_t batch,
-                         ValidSelection valid, DeviceBuffer& flush, const Options& options) {
+                         ValidSelection valid, bench::L2FlushBuffer& flush,
+                         const Options& options) {
     RecurrentResources resources(profile, width, batch, valid);
     const Measurement record =
         measure_component([&](cudaStream_t stream) { resources.launch_record(stream); }, flush,
@@ -561,7 +563,7 @@ void print_result(const Profile& profile, std::int32_t width, std::int32_t batch
 }
 
 int run(const Options& options) {
-    DeviceBuffer flush(options.flush_bytes);
+    bench::L2FlushBuffer flush(options.flush_bytes);
     for (const Profile& profile : selected_profiles(options.profiles)) {
         for (const std::int32_t width : selected_widths(profile, options.exact_width)) {
             const bool run_fold = options.component == ComponentSelection::Fold ||

@@ -680,8 +680,8 @@ double unique_kv_bytes(const Geometry& geometry, KvCacheStorage storage,
 }
 
 bench::ColdTiming measure(Case& data, Entry entry, Execution execution, CacheState cache,
-                          bench::TimedGraph* graph, DeviceBuffer& flush, cudaStream_t stream,
-                          int warmup, int repeat) {
+                          bench::TimedGraph* graph, bench::L2FlushBuffer& flush,
+                          cudaStream_t stream, int warmup, int repeat) {
     if (execution == Execution::Eager) {
         const auto launch = [&](cudaStream_t launch_stream) { data.launch(entry, launch_stream); };
         return cache == CacheState::Cold
@@ -758,7 +758,7 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
 void profile(Case& data, Entry entry, const Geometry& geometry, KvCacheStorage storage,
              const Options& options, std::int32_t batch, std::int32_t width,
              std::string_view contexts, std::string_view valid_columns, std::string_view table_rows,
-             DeviceBuffer& flush, cudaStream_t stream) {
+             bench::L2FlushBuffer& flush, cudaStream_t stream) {
     const Execution execution = options.execution;
     const CacheState cache = options.cache == CacheMode::Cold ? CacheState::Cold : CacheState::Warm;
     bench::TimedGraph graph;
@@ -859,7 +859,7 @@ int main(int argc, char** argv) {
         const Options options = parse_options(argc, argv);
         cudaStream_t stream   = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
+        bench::L2FlushBuffer flush(kFlushBytes);
         const std::vector<Geometry> geometries     = selected_geometries(options.geometry);
         const std::vector<KvCacheStorage> storages = selected_storages(options.kv);
 

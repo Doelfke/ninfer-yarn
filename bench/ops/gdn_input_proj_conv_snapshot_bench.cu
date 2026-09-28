@@ -445,7 +445,7 @@ private:
     bench::PackedQuantizedWeight qk_;
     bench::PackedQuantizedWeight value_z_;
     DeviceBuffer conv_weight_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
 };
 
 class Nvfp4Fixture {
@@ -501,7 +501,7 @@ public:
 private:
     bench::PackedQuantizedWeight parent_;
     DeviceBuffer conv_weight_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
     ops::LinearPolicy policy_;
 };
 
@@ -560,7 +560,7 @@ public:
 private:
     bench::PackedQuantizedWeight parent_;
     DeviceBuffer conv_weight_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
     ops::LinearPolicy policy_;
 };
 
@@ -613,7 +613,7 @@ public:
 private:
     bench::PackedQuantizedWeight parent_;
     DeviceBuffer conv_weight_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
 };
 
 template <class Fixture>

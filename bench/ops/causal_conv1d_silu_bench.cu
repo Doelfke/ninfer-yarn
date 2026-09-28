@@ -62,7 +62,7 @@ Result time_stage(const Options& options, const launch_fn& launch, double bytes_
     }
     constexpr int kColdWarmup = 20;
     constexpr int kColdRepeat = 40;
-    DeviceBuffer flush(kFlushBytes);
+    bench::L2FlushBuffer flush(kFlushBytes);
     const ColdTiming timing =
         restore ? measure_cold_launch_prepared(restore, launch, flush, nullptr, kColdWarmup,
                                                kColdRepeat)

@@ -8,6 +8,7 @@
 #include "ops/linear/fp8/fp8_a16_mma.cuh"
 #include "ops/linear/fp8/fp8_a16_sliced_k_mma.cuh"
 #include "ops/linear/fp8/fp8_a8_mma.cuh"
+#include "ops/linear/fp8/fp8_a8_tma_mma.cuh"
 
 namespace ninfer::ops::detail {
 template <class Schedule, class Output, class Epilogue, class Rows = Fp8IdentityRows>

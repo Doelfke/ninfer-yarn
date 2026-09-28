@@ -197,7 +197,7 @@ struct Fixture {
 };
 
 template <class Launch>
-bench::ColdTiming measure(const Options& options, Launch&& launch, DeviceBuffer& flush,
+bench::ColdTiming measure(const Options& options, Launch&& launch, bench::L2FlushBuffer& flush,
                           cudaStream_t stream, std::size_t* graph_nodes) {
     if (options.execution == Execution::Eager) {
         *graph_nodes = 0;
@@ -226,7 +226,7 @@ int main(int argc, char** argv) {
         cudaDeviceProp properties{};
         CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
         Fixture fixture;
-        DeviceBuffer flush(options.flush_bytes);
+        bench::L2FlushBuffer flush(options.flush_bytes);
         std::printf("# gpu=%s public=context_kv_materialize geometry=L5_K5120_N1024 cache=cold "
                     "flush_mib=%zu execution=%s\n",
                     properties.name, options.flush_bytes >> 20,
