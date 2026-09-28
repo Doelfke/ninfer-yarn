@@ -42,9 +42,7 @@ void launch_small_t(const Tensor& x, const Weight& weight, const Tensor& conv_we
                     const Tensor& initial_slot, Tensor& query, Tensor& key, Tensor& value,
                     Tensor& z, Publish publish, cudaStream_t stream) {
     using Schedule =
-        Fp8A16SimtSchedule<8, 2, (ActiveTokens >= 5 && ActiveTokens <= 6) ? 8 : 16, ActiveTokens, 1,
-                           ActiveTokens <= 4 ? Fp8SimtActivationAccess::SharedPhase
-                                             : Fp8SimtActivationAccess::TokenPacked,
+        Fp8A16SimtSchedule<8, 2, 16, ActiveTokens, 1, Fp8SimtActivationAccess::SharedPhase,
                            Fp8CodeCache::Default, 1, Fp8SimtBlockOrder::RowsContiguous, 1>;
     static_assert(Schedule::kBlockTokens == ActiveTokens);
     using Output = GdnConvOutput<ActiveTokens, Publish>;
@@ -109,8 +107,8 @@ constexpr auto make_record_launchers(std::index_sequence<Offsets...>) {
         &launch_record_small_t<2 + static_cast<int>(Offsets)>...};
 }
 
-constexpr auto kSnapshotLaunchers = make_snapshot_launchers(std::make_index_sequence<10 - 2 + 1>{});
-constexpr auto kRecordLaunchers   = make_record_launchers(std::make_index_sequence<10 - 2 + 1>{});
+constexpr auto kSnapshotLaunchers = make_snapshot_launchers(std::make_index_sequence<3 - 2 + 1>{});
+constexpr auto kRecordLaunchers   = make_record_launchers(std::make_index_sequence<3 - 2 + 1>{});
 
 } // namespace
 
@@ -119,7 +117,7 @@ void fp8_gdn_snapshot_fused_launch(const Tensor& x, const Weight& weight, const 
                                    const Tensor& initial_slot, const Tensor& snapshot_base_slot,
                                    Tensor& query, Tensor& key, Tensor& value, Tensor& z,
                                    cudaStream_t stream) {
-    if (x.ne[2] != 1 || x.ne[1] <= 0 || x.ne[1] > 10) {
+    if (x.ne[2] != 1 || x.ne[1] <= 0 || x.ne[1] > 3) {
         throw std::invalid_argument("fp8 GDN snapshot fused: unsupported B/W");
     }
     if (x.ne[1] == 1) {
@@ -136,7 +134,7 @@ void fp8_gdn_record_fused_launch(const Tensor& x, const Weight& weight, const Te
                                  const Tensor& conv_states, const Tensor& valid_columns,
                                  const Tensor& initial_slot, Tensor& conv_record, Tensor& query,
                                  Tensor& key, Tensor& value, Tensor& z, cudaStream_t stream) {
-    if (x.ne[2] != 1 || x.ne[1] < 2 || x.ne[1] > 10) {
+    if (x.ne[2] != 1 || x.ne[1] < 2 || x.ne[1] > 3) {
         throw std::invalid_argument("fp8 GDN record fused: unsupported B/W");
     }
     kRecordLaunchers[static_cast<std::size_t>(x.ne[1] - 2)](

@@ -35,6 +35,7 @@ constexpr std::int32_t kKeyRows   = 2048;
 // channel, which is what the column counts that reach a changed projection mechanism are
 // verified with (the surrounding sampled cases keep the smaller comparison set).
 inline constexpr std::int32_t kFullReferenceSamples = 1 << 20;
+
 std::int32_t snapshot_sample_count(std::int32_t tokens, bool full_reference = false) {
     if (full_reference) { return kFullReferenceSamples; }
     return tokens <= 4 ? 32 : 7;
@@ -75,10 +76,10 @@ struct SnapshotOracle {
 };
 
 template <class Projection>
-SnapshotOracle
-snapshot_oracle(std::int32_t value_rows, std::int32_t tokens, const std::vector<float>& conv_weight,
-                std::span<const std::uint16_t> initial_state, Projection&& projection,
-                bool full_reference = false) {
+SnapshotOracle snapshot_oracle(std::int32_t value_rows, std::int32_t tokens,
+                               const std::vector<float>& conv_weight,
+                               std::span<const std::uint16_t> initial_state,
+                               Projection&& projection, bool full_reference = false) {
     const std::int32_t channels = kQueryRows + kKeyRows + value_rows;
     SnapshotOracle oracle;
     const std::int32_t sample_count                = snapshot_sample_count(tokens, full_reference);
@@ -124,8 +125,7 @@ snapshot_oracle(std::int32_t value_rows, std::int32_t tokens, const std::vector<
 
 std::vector<double> gather_state(const std::vector<std::uint16_t>& full, std::int32_t channels,
                                  std::int32_t value_rows, std::int32_t tokens,
-                                 std::int32_t snapshot_base_slot,
-                                 bool full_reference = false) {
+                                 std::int32_t snapshot_base_slot, bool full_reference = false) {
     std::vector<double> gathered;
     const auto append = [&](std::int32_t global_row) {
         for (std::int32_t token = 0; token < tokens; ++token) {
@@ -179,7 +179,7 @@ int verify_snapshot_outputs(
     const GuardedBf16Tensor& value, std::int32_t value_rows, std::int32_t tokens,
     const SnapshotOracle& oracle,
     const ReductionCriterion& criterion = kGdnInputProjConvSnapshotA16Tolerance,
-    bool full_reference = false) {
+    bool full_reference                 = false) {
     int failures                    = 0;
     const std::int32_t sample_count = snapshot_sample_count(tokens, full_reference);
     failures += query.verify_guards("snapshot query" + std::string(suffix));
@@ -438,8 +438,7 @@ int run_batched_case(std::string_view label, std::int32_t hidden, std::int32_t v
 }
 
 int run_q4_q5_case(DevicePackedWeight& query_key, DevicePackedWeight& value_z_weight,
-                   std::int32_t tokens, std::int32_t initial_slot,
-                   bool full_reference = false) {
+                   std::int32_t tokens, std::int32_t initial_slot, bool full_reference = false) {
     constexpr std::int32_t kHidden           = 5120;
     constexpr std::int32_t kValueRows        = 6144;
     constexpr std::int32_t kZRows            = 6144;
@@ -498,28 +497,27 @@ int run_q4_q5_case(DevicePackedWeight& query_key, DevicePackedWeight& value_z_we
                                               token_activation, kHidden);
         },
         full_reference);
-    const std::int32_t sample_count = snapshot_sample_count(tokens, full_reference);
+    const std::int32_t sample_count              = snapshot_sample_count(tokens, full_reference);
     const std::vector<std::uint16_t> state_after = state.bits();
     const std::string suffix                     = " Q4/Q5 A16 T=" + std::to_string(tokens) +
                                " initial=" + std::to_string(initial_slot) +
                                " base=" + std::to_string(kSnapshotBaseSlot);
-    int failures = verify_snapshot_outputs(
-        suffix, query, key, value, kValueRows, tokens, oracle, kGdnInputProjConvSnapshotA16Tolerance,
-        full_reference);
-    failures += compare("snapshot state" + suffix,
-                        gather_state(state_after, kChannels, kValueRows, tokens, kSnapshotBaseSlot,
-                                     full_reference),
-                        oracle.state, kGdnInputProjConvSnapshotA16Tolerance);
+    int failures = verify_snapshot_outputs(suffix, query, key, value, kValueRows, tokens, oracle,
+                                           kGdnInputProjConvSnapshotA16Tolerance, full_reference);
+    failures += compare(
+        "snapshot state" + suffix,
+        gather_state(state_after, kChannels, kValueRows, tokens, kSnapshotBaseSlot, full_reference),
+        oracle.state, kGdnInputProjConvSnapshotA16Tolerance);
     failures += state.verify_guards("snapshot state" + suffix);
     failures += verify_state_effects("snapshot state" + suffix, state_before, state_after,
                                      kChannels, tokens, slots, kSnapshotBaseSlot);
     failures += z.verify_guards("snapshot z" + suffix);
     failures += z.verify_fully_written("snapshot z" + suffix);
-    failures += compare(
-        "snapshot z" + suffix, gather_rows(z.values(), kZRows, 0, kZRows, tokens, sample_count),
-        projection_oracle(value_z_weight.host, kValueRows, kZRows, activation, kHidden, tokens,
-                          sample_count),
-        kGdnInputProjConvSnapshotA16Tolerance);
+    failures += compare("snapshot z" + suffix,
+                        gather_rows(z.values(), kZRows, 0, kZRows, tokens, sample_count),
+                        projection_oracle(value_z_weight.host, kValueRows, kZRows, activation,
+                                          kHidden, tokens, sample_count),
+                        kGdnInputProjConvSnapshotA16Tolerance);
     failures += verify_preserved("snapshot x" + suffix, device_activation, activation_bits);
     failures +=
         verify_preserved("snapshot conv weight" + suffix, device_conv_weight, conv_weight_bits);
@@ -555,11 +553,12 @@ int run_q4_q5() {
         const std::int32_t initial_slot = tokens == 5 ? 0 : tokens + 1;
         failures += run_q4_q5_case(query_key, value_z_weight, tokens, initial_slot);
     }
-    // The column counts that reach a projection mechanism this change touched: 7 and 8 are the first
-    // counts the Q5 parent's split4 shape takes over (they were the row-block band, and the first two
-    // counts of the narrow-SIMT band), 9 the count that used to be the top of the split4 band, and 10
-    // the top of it now. These are compared against the complete FP64 formula for every output row and
-    // every state channel, so a mechanism that is wrong away from the sampled rows cannot pass.
+    // The column counts that reach a projection mechanism this change touched: 7 and 8 are the
+    // first counts the Q5 parent's split4 shape takes over (they were the row-block band, and the
+    // first two counts of the narrow-SIMT band), 9 the count that used to be the top of the split4
+    // band, and 10 the top of it now. These are compared against the complete FP64 formula for
+    // every output row and every state channel, so a mechanism that is wrong away from the sampled
+    // rows cannot pass.
     for (const std::int32_t tokens : {7, 8, 9, 10}) {
         failures += run_q4_q5_case(query_key, value_z_weight, tokens, tokens + 1, true);
     }
@@ -599,17 +598,16 @@ int run_q4_q5() {
                                               state, valid, initial, snapshot_base, q, k, v, z,
                                               workspace, nullptr);
         });
-    // The batched organisations whose aggregate column count is 10 reach the same Q5 parent mechanism
-    // as the dense B=1 W=10 case above, through the seam of a multi-request call: B=2/W=5 here, which
-    // covers the per-request history split and the aggregate route. Two forms of the same aggregate
-    // count are covered because the per-side band end moved, and the aggregate count is what selects
-    // the route.
+    // The batched organisations whose aggregate column count is 10 reach the same Q5 parent
+    // mechanism as the dense B=1 W=10 case above, through the seam of a multi-request call: B=2/W=5
+    // here, which covers the per-request history split and the aggregate route. Two forms of the
+    // same aggregate count are covered because the per-side band end moved, and the aggregate count
+    // is what selects the route.
     constexpr std::int32_t kAggTenWidth = 5;
     constexpr std::int32_t kAggTenBatch = 2;
     const std::size_t agg_ten_workspace_bytes =
-        ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(kQueryRows, kKeyRows, kValueRows,
-                                                                  kAggTenBatch, kAggTenWidth,
-                                                                  kAggTenWidth);
+        ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
+            kQueryRows, kKeyRows, kValueRows, kAggTenBatch, kAggTenWidth, kAggTenWidth);
     failures += run_batched_case(
         "Q4/Q5 A16 B=2 W=5", kHidden, kValueRows, kZRows, kAggTenWidth, kAggTenBatch, {},
         conv_weight, agg_ten_workspace_bytes, kGdnInputProjConvSnapshotA16Tolerance,
@@ -635,18 +633,17 @@ int run_q4_q5() {
                                               workspace, nullptr);
         });
 
-    // One batched case with mixed valid prefixes whose aggregate column count is 8 (4 x 2): two live
-    // prefixes (4 and 2 of 4) over the same projection route, plus the exact-zero invalid tails and the
-    // per-request history split. The projection is routed once from the aggregate count, not per
-    // request, so this is a batched organisation of the aggregate-8 configuration and not a claim
-    // about where any single-side band ends.
+    // One batched case with mixed valid prefixes whose aggregate column count is 8 (4 x 2): two
+    // live prefixes (4 and 2 of 4) over the same projection route, plus the exact-zero invalid
+    // tails and the per-request history split. The projection is routed once from the aggregate
+    // count, not per request, so this is a batched organisation of the aggregate-8 configuration
+    // and not a claim about where any single-side band ends.
     constexpr std::int32_t kNarrowWidth = 4;
     constexpr std::int32_t kNarrowBatch = 2;
     const std::vector<std::int32_t> narrow_valid{4, 2};
     const std::size_t narrow_workspace_bytes =
-        ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(kQueryRows, kKeyRows, kValueRows,
-                                                                  kNarrowBatch, kNarrowWidth,
-                                                                  kNarrowWidth);
+        ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
+            kQueryRows, kKeyRows, kValueRows, kNarrowBatch, kNarrowWidth, kNarrowWidth);
     failures += run_batched_case(
         "Q4/Q5 A16 B=2 W=4 masked", kHidden, kValueRows, kZRows, kNarrowWidth, kNarrowBatch,
         narrow_valid, conv_weight, narrow_workspace_bytes, kGdnInputProjConvSnapshotA16Tolerance,
@@ -680,9 +677,8 @@ int run_q4_q5() {
     constexpr std::int32_t kMixedBatch = 3;
     const std::vector<std::int32_t> mixed_valid{16, 9, 4};
     const std::size_t mixed_workspace_bytes =
-        ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(kQueryRows, kKeyRows, kValueRows,
-                                                                  kMixedBatch, kMixedWidth,
-                                                                  kMixedWidth);
+        ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
+            kQueryRows, kKeyRows, kValueRows, kMixedBatch, kMixedWidth, kMixedWidth);
     failures += run_batched_case(
         "Q4/Q5 A16 B=3 W=16 masked", kHidden, kValueRows, kZRows, kMixedWidth, kMixedBatch,
         mixed_valid, conv_weight, mixed_workspace_bytes, kGdnInputProjConvSnapshotA16Tolerance,
@@ -1044,7 +1040,7 @@ int run_fp8_case(DevicePackedWeight& parent, std::int32_t tokens, ops::LinearPol
                 parent.host, row, activation.data() + static_cast<std::size_t>(token) * kHidden,
                 kHidden);
         });
-    const bool uses_a8                  = policy == ops::LinearPolicy::AllowA8 && tokens >= 10;
+    const bool uses_a8                  = policy == ops::LinearPolicy::AllowA8 && tokens >= 17;
     const ReductionCriterion& criterion = uses_a8 ? kFp8GdnInputProjConvSnapshotA8Tolerance
                                                   : kFp8GdnInputProjConvSnapshotA16Tolerance;
     const std::string suffix =
@@ -1101,12 +1097,16 @@ int run_fp8() {
     failures += run_fp8_case(parent, 10, ops::LinearPolicy::AllowA8, 11);
     failures += run_fp8_case(parent, 10, ops::LinearPolicy::A16Only, 11);
     failures += run_fp8_case(parent, 11, ops::LinearPolicy::A16Only, 12);
+    failures += run_fp8_case(parent, 16, ops::LinearPolicy::AllowA8, 17);
     failures += run_fp8_case(parent, 17, ops::LinearPolicy::AllowA8, 1);
+    failures += run_fp8_case(parent, 257, ops::LinearPolicy::AllowA8, 258);
+    failures += run_fp8_case(parent, 512, ops::LinearPolicy::AllowA8, 513);
+    failures += run_fp8_case(parent, 1025, ops::LinearPolicy::AllowA8, 1026);
 
     const auto run_batched = [&](std::int32_t width, std::int32_t batch,
                                  std::vector<std::int32_t> valid_columns, std::uint32_t seed) {
         const std::vector<float> conv_weight = make_conv_weight(kChannels, seed);
-        const bool uses_a8                   = width * batch >= 9;
+        const bool uses_a8                   = width * batch >= 17;
         const std::size_t workspace_bytes =
             ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
                 QType::FP8_E4M3FN_ROW_BF16, kRows, kHidden, ops::LinearPolicy::AllowA8, batch,
@@ -1185,20 +1185,17 @@ int main() {
         return ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
             QType::FP8_E4M3FN_ROW_BF16, 16384, 5120, policy, batch, min_width, max_width);
     };
-    const std::size_t fp8_a16_w4 = fp8_snapshot_capacity(ops::LinearPolicy::A16Only, 1, 4, 4);
-    const std::size_t fp8_a16_w6 = fp8_snapshot_capacity(ops::LinearPolicy::A16Only, 1, 6, 6);
-    const std::size_t fp8_a8_w10 = fp8_snapshot_capacity(ops::LinearPolicy::AllowA8, 1, 10, 10);
-    if (fp8_snapshot_capacity(ops::LinearPolicy::A16Only, 1, 1, 3) != 0 || fp8_a16_w4 == 0 ||
-        fp8_a16_w6 <= fp8_a16_w4 ||
-        fp8_snapshot_capacity(ops::LinearPolicy::A16Only, 1, 7, 10) != 0 ||
-        fp8_snapshot_capacity(ops::LinearPolicy::A16Only, 1, 1, 9) != fp8_a16_w6 ||
-        fp8_snapshot_capacity(ops::LinearPolicy::A16Only, 1, 11, 11) == 0 ||
-        fp8_snapshot_capacity(ops::LinearPolicy::AllowA8, 1, 7, 9) != 0 || fp8_a8_w10 == 0 ||
-        fp8_snapshot_capacity(ops::LinearPolicy::AllowA8, 1, 1, 10) != fp8_a8_w10 ||
-        fp8_snapshot_capacity(ops::LinearPolicy::AllowA8, 2, 5, 5) <=
-            fp8_snapshot_capacity(ops::LinearPolicy::AllowA8, 2, 4, 4)) {
-        std::cerr << "FP8 snapshot capacity did not preserve measured route witnesses\n";
-        ++failures;
+    for (auto policy : {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8}) {
+        for (int batch : {1, 2, 8}) {
+            std::size_t peak = 0;
+            for (int width = 1; width <= 16; ++width) {
+                peak = std::max(peak, fp8_snapshot_capacity(policy, batch, width, width));
+                if (fp8_snapshot_capacity(policy, batch, 1, width) != peak) {
+                    std::cerr << "FP8 snapshot interval misses an execution capacity\n";
+                    ++failures;
+                }
+            }
+        }
     }
     failures += run_q4_q5();
     failures += run_q8();

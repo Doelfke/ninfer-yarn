@@ -96,11 +96,13 @@ inline constexpr int fp8_tma_scratch_bytes = [] {
     return (bytes + 127) / 128 * 128;
 }();
 
-template <class Schedule, bool FullTokens, class Output, class Epilogue, bool SplitK = false>
+template <class Schedule, bool FullTokens, class Output, class Epilogue, bool SplitK = false,
+          class RowPolicy = Fp8IdentityRows>
 __global__
 __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void fp8_a8_tma_mma_kernel(
     const __grid_constant__ Fp8TmaDescriptors descriptors, Fp8A8Operands operands, Output output,
-    Epilogue epilogue, int token_offset, int count, Fp8TmaSplitKPlan plan, float* partials) {
+    Epilogue epilogue, RowPolicy row_policy, int token_offset, int count, Fp8TmaSplitKPlan plan,
+    float* partials) {
     constexpr int BT = Schedule::kBlockTokens, BR = Schedule::kBlockRows;
     constexpr int BK = Schedule::kBlockK, S = Schedule::kStages;
     const int k = Schedule::kStaticK ? Schedule::kStaticK : operands.k;
@@ -123,7 +125,8 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void fp8_a8_tma
     const int row_tiles = operands.rows / BR, token_tiles = div_up(count, BT);
     int row_tile, token_tile;
     fp8_mma_tile_coordinates<Schedule>(tile, row_tiles, token_tiles, row_tile, token_tile);
-    const int row_begin = row_tile * BR, token_begin = token_offset + token_tile * BT;
+    const int row_begin   = row_tile * (BR / (RowPolicy::kPaired ? 2 : 1));
+    const int token_begin = token_offset + token_tile * BT;
 
     extern __shared__ __align__(128) unsigned char fp8_tma_shared[];
     auto* activation = fp8_tma_shared;
@@ -149,8 +152,21 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void fp8_a8_tma
                 cta_mbarrier_arrive_expect_tx(full + stage, (BT + BR) * BK);
                 fp8_tma_load(activation + stage * BT * BK, &descriptors.activation,
                              (k_begin + kt) * BK, token_begin, full + stage);
-                fp8_tma_load(weight + stage * BR * BK, &descriptors.weight, (k_begin + kt) * BK,
-                             row_begin, full + stage);
+                if constexpr (RowPolicy::kPaired) {
+                    // Each consumer warp owns both gate/up fragments. Load their contiguous
+                    // weight spans into that warp's logical shared rows without repacking.
+                    constexpr int span = Schedule::kWarpRows / 2;
+#pragma unroll
+                    for (int local = 0; local < BR; local += span) {
+                        fp8_tma_load(weight + (stage * BR + local) * BK, &descriptors.weight,
+                                     (k_begin + kt) * BK,
+                                     row_policy.weight_row(row_begin, local, operands.rows),
+                                     full + stage);
+                    }
+                } else {
+                    fp8_tma_load(weight + stage * BR * BK, &descriptors.weight, (k_begin + kt) * BK,
+                                 row_begin, full + stage);
+                }
             }
         }
         return;
@@ -194,39 +210,59 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void fp8_a8_tma
     // All consumers must finish reading staged inputs before the epilogue reuses the storage.
     __syncthreads();
     fp8_finish_mma_tile<Schedule, FullTokens>(
-        output, epilogue, Fp8IdentityRows{}, fp8_tma_shared, accumulators, operands.x_scales,
+        output, epilogue, row_policy, fp8_tma_shared, accumulators, operands.x_scales,
         operands.scales, row_begin, token_begin, operands.rows, token_offset + count, warp, lane);
 }
 
-template <class Schedule, class Output, class Epilogue>
+template <class Schedule, class Output, class Epilogue, class RowPolicy>
 __global__ void fp8_a8_tma_split_k_reduce(Fp8A8Operands p, const float* partials, Output output,
-                                          Epilogue epilogue, Fp8TmaSplitKPlan plan,
-                                          int token_offset, int count) {
+                                          Epilogue epilogue, RowPolicy row_policy,
+                                          Fp8TmaSplitKPlan plan, int token_offset, int count) {
     constexpr int BT = Schedule::kBlockTokens, BR = Schedule::kBlockRows;
-    constexpr int chunk_elements = BT * BR / Schedule::kReductionBlocks;
+    constexpr int stored_rows    = BR / (RowPolicy::kPaired ? 2 : 1);
+    constexpr int chunk_elements = BT * stored_rows / Schedule::kReductionBlocks;
     const int tail               = blockIdx.x / Schedule::kReductionBlocks;
     const int chunk              = blockIdx.x % Schedule::kReductionBlocks;
     int row_tile, token_tile;
     fp8_mma_tile_coordinates<Schedule>(plan.full_tiles + tail, p.rows / BR, div_up(count, BT),
                                        row_tile, token_tile);
     const int first = plan.first_part(tail), parts = plan.parts(tail);
-    const auto tile_output = linear_output_tile<BR>(output, row_tile * BR);
+    const int row_begin    = row_tile * stored_rows;
+    const auto tile_output = linear_output_tile<stored_rows>(output, row_begin);
     for (int index = chunk * chunk_elements + threadIdx.x * 2; index < (chunk + 1) * chunk_elements;
          index += blockDim.x * 2) {
-        const int token = token_offset + token_tile * BT + index / BR;
-        const int row   = row_tile * BR + index % BR;
+        const int token_local = index / stored_rows;
+        const int token       = token_offset + token_tile * BT + token_local;
+        const int output_row  = index % stored_rows;
+        const int row         = row_begin + output_row;
         if (token < token_offset + count) {
-            float2 value{};
-            for (int part = 0; part < parts; ++part) {
-                const auto v = *reinterpret_cast<const float2*>(
-                    partials + std::size_t(first + part) * BT * BR + index);
-                value.x += v.x;
-                value.y += v.y;
+            const auto sum_pair = [&](int local_row) {
+                float2 sum{};
+                for (int part = 0; part < parts; ++part) {
+                    const auto value = *reinterpret_cast<const float2*>(
+                        partials + std::size_t(first + part) * BT * BR + token_local * BR +
+                        local_row);
+                    sum.x += value.x;
+                    sum.y += value.y;
+                }
+                const int parent  = row_policy.weight_row(row_begin, local_row, p.rows);
+                const float scale = p.x_scales[token];
+                sum.x             = sum.x * scale * __bfloat162float(p.scales[parent]);
+                sum.y             = sum.y * scale * __bfloat162float(p.scales[parent + 1]);
+                return sum;
+            };
+            float2 value;
+            if constexpr (RowPolicy::kPaired) {
+                constexpr int half_warp = Schedule::kWarpRows / 2;
+                const int gate_row =
+                    (output_row / half_warp) * Schedule::kWarpRows + output_row % half_warp;
+                const float2 gate = sum_pair(gate_row);
+                const float2 up   = sum_pair(gate_row + half_warp);
+                value             = make_float2(epilogue.apply_pair(row, token, gate.x, up.x),
+                                                epilogue.apply_pair(row + 1, token, gate.y, up.y));
+            } else {
+                value = fp8_apply_row_pair(epilogue, row, row + 1, token, sum_pair(output_row));
             }
-            const float scale = p.x_scales[token];
-            value.x = epilogue.apply(row, token, value.x * scale * __bfloat162float(p.scales[row]));
-            value.y = epilogue.apply(row + 1, token,
-                                     value.y * scale * __bfloat162float(p.scales[row + 1]));
             if constexpr (std::is_same_v<Output, LinearBf16Output>) {
                 *reinterpret_cast<__nv_bfloat162*>(tile_output.at(row, token)) =
                     __floats2bfloat162_rn(value.x, value.y);
@@ -238,39 +274,47 @@ __global__ void fp8_a8_tma_split_k_reduce(Fp8A8Operands p, const float* partials
     }
 }
 
-template <class Schedule, class Output, class Epilogue>
+template <class Schedule, class Output, class Epilogue, class RowPolicy = Fp8IdentityRows>
 void launch_fp8_a8_tma_mma(const Fp8A8Operands& p, Output output, Epilogue epilogue,
-                           cudaStream_t stream, float* partials = nullptr) {
+                           cudaStream_t stream, float* partials = nullptr,
+                           RowPolicy row_policy = {}) {
     validate_fp8_operands<Schedule>(p);
     if (p.rows % Schedule::kBlockRows || p.k % Schedule::kBlockK)
         throw std::invalid_argument("FP8 TMA requires complete row/K tiles");
+    if constexpr (RowPolicy::kPaired) {
+        static_assert(RowPolicy::kWarpPaired && RowPolicy::kContiguousPairs);
+        static_assert(Schedule::kWarpRows % 16 == 0);
+    }
+    constexpr int weight_span = RowPolicy::kPaired ? Schedule::kWarpRows / 2 : Schedule::kBlockRows;
     // Descriptors are launch-owned values, copied into kernel parameters during Graph capture.
     const Fp8TmaDescriptors descriptors{
         fp8_tma_map(p.x, p.tokens, p.k, Schedule::kBlockTokens, Schedule::kBlockK),
-        fp8_tma_map(p.codes, p.rows, p.k, Schedule::kBlockRows, Schedule::kBlockK)};
+        fp8_tma_map(p.codes, p.rows, p.k, weight_span, Schedule::kBlockK)};
     for_each_token_slice(p.tokens, Schedule::kBlockTokens, [&](int offset, int count) {
         const int blocks  = p.rows / Schedule::kBlockRows * div_up(count, Schedule::kBlockTokens);
         const auto plan   = fp8_tma_split_k_plan<Schedule>(blocks, p.k);
         const auto launch = [&]<bool Full, bool Split>() {
-            constexpr auto kernel = fp8_a8_tma_mma_kernel<Schedule, Full, Output, Epilogue, Split>;
+            constexpr auto kernel =
+                fp8_a8_tma_mma_kernel<Schedule, Full, Output, Epilogue, Split, RowPolicy>;
             constexpr int bytes =
                 fp8_tma_scratch_bytes<Schedule, Epilogue> + Schedule::kBarrierBytes;
             const int dynamic = fp8_prepare_shared<bytes, kernel, true>();
             const int grid    = Split ? plan.full_tiles + plan.split_ctas : blocks;
-            kernel<<<grid, Schedule::kThreads, dynamic, stream>>>(descriptors, p, output, epilogue,
-                                                                  offset, count, plan, partials);
+            kernel<<<grid, Schedule::kThreads, dynamic, stream>>>(
+                descriptors, p, output, epilogue, row_policy, offset, count, plan, partials);
             CUDA_CHECK(cudaGetLastError());
             if constexpr (Split) {
                 fp8_a8_tma_split_k_reduce<Schedule>
                     <<<plan.tail_tiles * Schedule::kReductionBlocks, 256, 0, stream>>>(
-                        p, partials, output, epilogue, plan, offset, count);
+                        p, partials, output, epilogue, row_policy, plan, offset, count);
                 CUDA_CHECK(cudaGetLastError());
             }
         };
         if constexpr (Schedule::kSplitWaveCtas > 0) {
             static_assert(
-                requires { epilogue.apply(0, 0, 0.0f); },
-                "FP8 TMA split-K requires a scalar epilogue after reduction");
+                (!RowPolicy::kPaired && requires { epilogue.apply(0, 0, 0.0f); }) ||
+                    (RowPolicy::kPaired && requires { epilogue.apply_pair(0, 0, 0.0f, 0.0f); }),
+                "FP8 TMA split-K requires a scalar or paired epilogue after reduction");
             if (plan.split_ctas) {
                 if (!partials || reinterpret_cast<std::uintptr_t>(partials) % 16)
                     throw std::invalid_argument("FP8 TMA split-K requires aligned caller partials");

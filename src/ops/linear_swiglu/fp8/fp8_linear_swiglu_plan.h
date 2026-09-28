@@ -12,6 +12,8 @@
 
 namespace ninfer::ops::detail {
 
+[[nodiscard]] std::size_t fp8_linear_swiglu_partial_capacity_bytes(std::int32_t max_tokens);
+
 [[nodiscard]] std::size_t fp8_linear_swiglu_workspace_capacity_bytes(LinearPolicy policy,
                                                                      std::int32_t min_tokens,
                                                                      std::int32_t max_tokens);

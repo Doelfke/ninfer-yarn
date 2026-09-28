@@ -13,7 +13,7 @@ int check_negative_gate() {
     using namespace ninfer;
     namespace qw = test::quantized_weight;
     if (test::cuda_unavailable()) return 0;
-    constexpr int rows = 34816, k = 5120, half = rows / 2, max_tokens = 65;
+    constexpr int rows = 34816, k = 5120, half = rows / 2, max_tokens = 513;
     auto packed = qw::make_patterned_weight(QType::FP8_E4M3FN_ROW_BF16, rows, k, 1817U);
     std::fill(packed.payload.begin(), packed.payload.end(), 0);
     for (int row = 0; row < rows; ++row) {
@@ -37,7 +37,7 @@ int check_negative_gate() {
         weight.qtype, rows, k, ops::LinearPolicy::AllowA8, 1, max_tokens);
     WorkspaceArena workspace(bytes);
     int failures = 0;
-    for (int tokens : {1, 64, 65}) {
+    for (int tokens : {1, 64, 65, 257, 513}) {
         Tensor input(x.data(), DType::BF16, {k, tokens});
         Tensor output(y.data(), DType::BF16, {half, tokens});
         ops::linear_swiglu(input, weight, output, ops::LinearPolicy::AllowA8, workspace, nullptr);
@@ -62,7 +62,9 @@ int main() {
     try {
         constexpr std::array kA16Cases{1,  2,  4,  5,  8,  9,  16,  17,  24,  25,
                                        32, 33, 64, 65, 96, 97, 128, 129, 1024};
-        constexpr std::array<std::int32_t, 11> kA8Cases{1, 2, 3, 8, 16, 48, 64, 65, 96, 128, 1024};
+        constexpr std::array kA8Cases{1,   2,   3,   4,   5,   6,   8,   15,  16,   17,   31,
+                                      32,  33,  48,  63,  64,  65,  96,  127, 128,  129,  191,
+                                      192, 193, 255, 256, 257, 511, 512, 513, 1023, 1024, 1025};
         int failures = 0;
         failures += check_negative_gate();
         failures += run_profile(
@@ -72,7 +74,7 @@ int main() {
         failures += run_profile(
             "LinearSwiGLU FP8_A8",
             {QType::FP8_E4M3FN_ROW_BF16, 34816, 5120, 17408, 1813U, ActivationCompute::A8},
-            kA8Cases, std::array<std::int32_t, 3>{2, 65, 128});
+            kA8Cases, std::array{4, 5, 65, 193, 257, 512, 513, 1025});
         std::cout << (failures == 0 ? "OK" : "FAIL") << " LinearSwiGLU FP8 correctness\n";
         return failures == 0 ? 0 : 1;
     } catch (const std::exception& error) {

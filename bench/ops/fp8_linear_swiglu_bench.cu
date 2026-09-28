@@ -163,9 +163,8 @@ int main(int argc, char** argv) {
             const double flops   = 2.0 * static_cast<double>(kGateUpRows) * kHidden * tokens;
             const double bytes   = static_cast<double>(packed.model_weight_bytes()) +
                                  2.0 * static_cast<double>(kHidden + kOutputRows) * tokens;
-            const double tflops = flops / seconds / 1.0e12;
-            const bool tensor_route =
-                options.policy == ops::LinearPolicy::AllowA8 && (tokens == 1 || tokens >= 3);
+            const double tflops     = flops / seconds / 1.0e12;
+            const bool tensor_route = options.policy == ops::LinearPolicy::AllowA8 && tokens >= 5;
             const double tensor_percent = tensor_route ? 100.0 * tflops / kMxFp8Fp32AccumulatePeak
                                                        : std::numeric_limits<double>::quiet_NaN();
             if (std::isfinite(tensor_percent)) {

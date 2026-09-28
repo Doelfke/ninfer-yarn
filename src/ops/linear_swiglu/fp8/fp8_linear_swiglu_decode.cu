@@ -16,7 +16,8 @@ namespace ninfer::ops::detail {
 namespace {
 
 using Geometry = Fp8N34816K5120;
-using Schedule = Fp8A16GemvSchedule<8, 2, 8, 4, Fp8CodeCache::Default, 2, 2>;
+using Schedule = Fp8A16SimtSchedule<4, 2, 16, 4, 1, Fp8SimtActivationAccess::TokenPacked,
+                                    Fp8CodeCache::Default, 1, Fp8SimtBlockOrder::RowsContiguous, 1>;
 
 constexpr int kIntermediate = Geometry::kOutputRows / 2;
 static_assert(Schedule::kRowsPerWarp == 2);
@@ -32,7 +33,7 @@ void fp8_linear_swiglu_decode_launch(const Tensor& x, const Weight& weight, Tens
         throw std::invalid_argument("fp8 linear_swiglu decode: invalid exact problem");
     }
     const LinearBf16Output output{static_cast<__nv_bfloat16*>(out.data), kIntermediate};
-    launch_fp8_a16_gemv<Fp8ScheduleInstance<Schedule, Geometry::kInputRows>>(
+    launch_fp8_a16_simt<Fp8ScheduleInstance<Schedule, Geometry::kInputRows, 4>>(
         fp8_a16_operands(x, weight), output, Fp8SwiGluEpilogue{}, stream, Rows{});
 }
 

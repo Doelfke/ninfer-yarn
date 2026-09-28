@@ -23,6 +23,10 @@ struct SwiGluTokenMajorMmaRows {
 };
 
 struct SwiGluTokenMajorMmaEpilogue {
+    __device__ __forceinline__ float apply_pair(int, int, float gate, float up) const {
+        return silu(gate) * up;
+    }
+
     template <class Schedule>
     static constexpr int kSharedBytes = Schedule::kBlockTokens * (Schedule::kBlockRows / 2 + 8) * 2;
 

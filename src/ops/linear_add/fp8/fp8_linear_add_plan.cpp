@@ -25,13 +25,12 @@ Fp8LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_row
     }
     if (policy == LinearPolicy::A16Only) { return Fp8LinearAddRoute::A16; }
     if (!allows_a8(policy)) { throw std::invalid_argument("fp8 linear_add: unsupported policy"); }
-    const std::int32_t first_a8 = input_rows == Fp8N5120K6144::kInputRows ? 22 : 25;
+    const std::int32_t first_a8 = input_rows == Fp8N5120K6144::kInputRows ? 17 : 20;
     return tokens >= first_a8 ? Fp8LinearAddRoute::A8 : Fp8LinearAddRoute::A16;
 }
 
 void launch_a16(const Tensor& x, const Weight& weight, Tensor& residual, cudaStream_t stream) {
     if (x.ne[1] == 1) return fp8_linear_add_decode_launch(x, weight, residual, stream);
-    if (x.ne[1] <= 4) return fp8_linear_add_small_t_launch(x, weight, residual, stream);
     fp8_linear_add_matrix_launch(x, weight, residual, stream);
 }
 
@@ -46,7 +45,9 @@ std::size_t fp8_linear_add_workspace_capacity_bytes(std::int32_t output_rows,
     }
     (void)resolve_route(output_rows, input_rows, policy, min_tokens);
     return resolve_route(output_rows, input_rows, policy, max_tokens) == Fp8LinearAddRoute::A8
-               ? fp8_a8_workspace_capacity_bytes(max_tokens, input_rows)
+               ? fp8_a8_workspace_capacity_bytes(
+                     max_tokens, input_rows,
+                     fp8_linear_add_partial_capacity_bytes(input_rows, max_tokens))
                : 0;
 }
 

@@ -124,7 +124,7 @@ const char* policy_name(ops::LinearPolicy policy) {
 
 bool uses_tensor_cores(const Options& options, std::int32_t tokens) {
     if (options.policy != ops::LinearPolicy::AllowA8) { return false; }
-    return options.k == 6144 ? tokens >= 22 : tokens >= 25;
+    return tokens >= (options.k == 6144 ? 17 : 20);
 }
 
 void write_csv(const Options& options, const std::vector<Result>& results,

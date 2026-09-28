@@ -8,6 +8,17 @@
 
 namespace ninfer::ops::detail {
 
+// Epilogues may consume adjacent aligned rows together; the scalar contract remains valid.
+template <class Epilogue>
+__device__ __forceinline__ float2 fp8_apply_row_pair(Epilogue epilogue, int row, int next_row,
+                                                     int token, float2 value) {
+    if constexpr (requires { epilogue.apply_row_pair(row, token, value); }) {
+        if (next_row == row + 1) return epilogue.apply_row_pair(row, token, value);
+    }
+    return make_float2(epilogue.apply(row, token, value.x),
+                       epilogue.apply(next_row, token, value.y));
+}
+
 template <class Schedule>
 __device__ __forceinline__ int fp8_mma_shared_byte(int row, int logical_byte) {
     if constexpr (Schedule::kTmaSwizzle) {
@@ -188,20 +199,17 @@ fp8_finish_mma_tile(Output output, Epilogue epilogue, RowPolicy row_policy,
                 accumulators[mma_token][mma_row][2] = value10;
                 accumulators[mma_token][mma_row][3] = value11;
             } else {
-                if constexpr (FullTokens) {
-                    value00 = epilogue.apply(parent_row0, token0, value00);
-                    value01 = epilogue.apply(parent_row1, token0, value01);
-                    value10 = epilogue.apply(parent_row0, token1, value10);
-                    value11 = epilogue.apply(parent_row1, token1, value11);
-                } else {
-                    if (token0 < tokens) {
-                        value00 = epilogue.apply(parent_row0, token0, value00);
-                        value01 = epilogue.apply(parent_row1, token0, value01);
-                    }
-                    if (token1 < tokens) {
-                        value10 = epilogue.apply(parent_row0, token1, value10);
-                        value11 = epilogue.apply(parent_row1, token1, value11);
-                    }
+                if (FullTokens || token0 < tokens) {
+                    const float2 value = fp8_apply_row_pair(epilogue, parent_row0, parent_row1,
+                                                            token0, make_float2(value00, value01));
+                    value00            = value.x;
+                    value01            = value.y;
+                }
+                if (FullTokens || token1 < tokens) {
+                    const float2 value = fp8_apply_row_pair(epilogue, parent_row0, parent_row1,
+                                                            token1, make_float2(value10, value11));
+                    value10            = value.x;
+                    value11            = value.y;
                 }
                 auto* destination0 = reinterpret_cast<__nv_bfloat162*>(
                     shared_output + (token0 - token_begin) * output_stride + local_row0);
