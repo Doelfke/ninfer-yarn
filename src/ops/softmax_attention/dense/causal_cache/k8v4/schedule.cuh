@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ops/softmax_attention/common/causal_geometry.h"
+#include "ops/softmax_attention/common/mxfp8_tiled_plan.h"
 
 namespace ninfer::ops::detail {
 
@@ -17,34 +18,26 @@ struct K8V4KvGroupedMmaSchedule {
     static constexpr int kArenaBytes    = 7 * KeyTile * 256 / 2;
 };
 
-// Two QK warps cover disjoint key halves; four PV warps split the output D axis.
-template <int QueryTile = 64, int KeyTile = 64, int MaxRegisters = 120>
+// Each warp owns 16 query rows through QK, online softmax, and PV.
+template <int QueryTile = kMxfp8TiledQueryRows, int KeyTile = 64, int MaxRegisters = 255>
 struct K8V4KvTiledMmaSchedule {
-    static_assert(QueryTile == 16 || QueryTile == 32 || QueryTile == 64);
+    static_assert(QueryTile == 16 || QueryTile == 32 || QueryTile == 64 || QueryTile == 128);
     static_assert(KeyTile == 32 || KeyTile == 64);
     static_assert(MaxRegisters > 0 && MaxRegisters <= 255);
-    static constexpr int kQueryRows       = QueryTile;
-    static constexpr int kKeyRows         = KeyTile;
-    static constexpr int kRowTiles        = QueryTile / 16;
-    static constexpr int kDConsumers      = 4;
-    static constexpr int kWarps           = kRowTiles * kDConsumers;
-    static constexpr int kThreads         = kWarps * 32;
-    static constexpr int kProducerWarps   = 2 * kRowTiles;
-    static constexpr int kProducerThreads = kProducerWarps * 32;
-    static constexpr int kMaxRegisters    = MaxRegisters;
-    static constexpr int kQBytes          = QueryTile * 256;
-    static constexpr int kQScaleBytes     = QueryTile * 4;
-    static constexpr int kKBytes          = KeyTile * 256;
-    static constexpr int kVBytes          = KeyTile * 128;
-    static constexpr int kVStageBytes     = KeyTile * 256 * 2;
-    static constexpr int kPBytes          = QueryTile * KeyTile * 2;
-    static constexpr int kScaleBytes      = KeyTile * (2 + 16);
-    static constexpr int kStatsBytes      = 7 * QueryTile * 4;
-    static constexpr int kMainSharedBytes = kQBytes + kQScaleBytes + kKBytes + kVBytes +
-                                            kVStageBytes + kPBytes + kScaleBytes + kStatsBytes;
-    // The final FP32 inverse-rotation row tile aliases the completed mainloop arena.
+    static constexpr int kQueryRows    = QueryTile;
+    static constexpr int kKeyRows      = KeyTile;
+    static constexpr int kRowTiles     = QueryTile / 16;
+    static constexpr int kWarps        = kRowTiles;
+    static constexpr int kThreads      = kWarps * 32;
+    static constexpr int kMaxRegisters = MaxRegisters;
+    static constexpr int kQBytes       = QueryTile * 256;
+    static constexpr int kQScaleBytes  = QueryTile * 4;
+    static constexpr int kKBytes       = KeyTile * 256;
+    static constexpr int kVBytes       = KeyTile * 128;
+    static constexpr int kVStageBytes  = KeyTile * 256 * 2;
+    static constexpr int kScaleBytes   = KeyTile * (2 + 16);
     static constexpr int kSharedBytes =
-        kMainSharedBytes > QueryTile * 256 * 4 ? kMainSharedBytes : QueryTile * 256 * 4;
+        kQBytes + kQScaleBytes + kKBytes + kVBytes + kVStageBytes + kScaleBytes;
     static_assert(kSharedBytes <= 99 * 1024);
 };
 

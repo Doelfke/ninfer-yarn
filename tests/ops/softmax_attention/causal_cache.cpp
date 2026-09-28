@@ -2416,6 +2416,23 @@ int run_quantized_causal_cases(KvCacheStorage storage) {
         const std::array<int, 4> queries{0, 63, 64, 1023};
         failures += run_a1_case(geometry, storage, {1024, 8192, 9216, 611u},
                                 MappingPattern::Fragmented, queries);
+        if (storage == KvCacheStorage::Fp8E4M3Row256 ||
+            storage == KvCacheStorage::Fp8KeyNvfp4Value) {
+            // Ragged prefill, changing page metadata, and wholly masked query tiles.
+            failures += run_batch_case(geometry, storage,
+                                       {129,
+                                        {17},
+                                        {65},
+                                        {0},
+                                        MappingPattern::Fragmented,
+                                        619u,
+                                        true,
+                                        {{17}, {1025}, {63}}},
+                                       2048);
+            const std::array<int, 3> tail_queries{0, 127, 128};
+            failures += run_a3_case(geometry, storage, {129, 8192, 8321, 620u},
+                                    MappingPattern::Fragmented, tail_queries);
+        }
         failures += run_a1_case(geometry, storage, {1, 63, 64, 612u, false, true},
                                 MappingPattern::Fragmented);
         failures += run_a3_case(geometry, storage, {1, 0, 1, 613u, false, true},
@@ -2545,6 +2562,25 @@ int verify_workspace_capacity_contract(KvCacheStorage storage) {
     if (interval != witness) {
         std::cerr << "causal_softmax_attention interval capacity has no exact route witness\n";
         ++failures;
+    }
+
+    if (storage == KvCacheStorage::Fp8E4M3Row256 || storage == KvCacheStorage::Fp8KeyNvfp4Value) {
+        // Prefill split counts can decrease as query width grows. The interval
+        // query must still cover every supported point, including before a drop.
+        for (const auto& item : kGeometries) {
+            constexpr ops::CausalAttentionExecutionEnvelope prefill_envelope{1, 131072};
+            std::size_t largest = 0;
+            for (int width = 17; width <= 1025; ++width)
+                largest = std::max(
+                    largest, ops::causal_softmax_attention_workspace_capacity_bytes(
+                                 op_geometry(item), storage, prefill_envelope, 1, width, width));
+            const auto capacity = ops::causal_softmax_attention_workspace_capacity_bytes(
+                op_geometry(item), storage, prefill_envelope, 1, 17, 1025);
+            if (capacity != largest) {
+                std::cerr << "causal_softmax_attention prefill interval capacity mismatch\n";
+                ++failures;
+            }
+        }
     }
 
     try {

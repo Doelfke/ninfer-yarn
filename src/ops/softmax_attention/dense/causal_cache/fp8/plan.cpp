@@ -1,5 +1,6 @@
 #include "ops/softmax_attention/dense/causal_cache/fp8/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/fp8/operands.h"
+#include "ops/softmax_attention/common/mxfp8_tiled_plan.h"
 #include <algorithm>
 #include <stdexcept>
 
@@ -16,6 +17,9 @@ Fp8KvCausalPlan make_fp8_kv_causal_plan(int heads, int width, int batch,
     const auto family           = width <= grouped_limit ? Fp8KvFamily::Grouped
                                   : width <= 16          ? Fp8KvFamily::ParallelGrouped
                                                          : Fp8KvFamily::Tiled;
+    if (family == Fp8KvFamily::Tiled)
+        return {family, heads,    width,
+                batch,  envelope, mxfp8_tiled_partition(heads, width, envelope.max_visible_keys)};
     const int tiles =
         family == Fp8KvFamily::ParallelGrouped ? (width + grouped_limit - 1) / grouped_limit : 1;
     const int independent_tiles = batch * (heads == 24 ? 4 : 2) * tiles;
@@ -43,7 +47,8 @@ std::size_t fp8_kv_workspace_bytes(int heads, int batch, int min_width, int max_
         (void)allocate_causal_partials(layout, heads, width, splits, batch);
         maximum = std::max(maximum, layout.peak_bytes(1));
     }
-    return maximum;
+    return std::max(maximum, mxfp8_tiled_workspace_bytes(heads, min_width, max_width,
+                                                         envelope.max_visible_keys));
 }
 
 } // namespace ninfer::ops::detail

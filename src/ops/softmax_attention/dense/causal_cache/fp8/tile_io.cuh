@@ -23,4 +23,14 @@ __device__ __forceinline__ int4 fp8_kv_dequant_f16x8(const std::uint8_t* codes, 
                      static_cast<int>(packed[2]), static_cast<int>(packed[3]));
 }
 
+struct Fp8KvTiledValues {
+    using Scale                      = __half;
+    static constexpr int kCodeBytes  = 256;
+    static constexpr int kScaleItems = 1;
+
+    __device__ __forceinline__ static int4 expand(const std::uint8_t* codes, Scale scale) {
+        return fp8_kv_dequant_f16x8(codes, scale);
+    }
+};
+
 } // namespace ninfer::ops::detail

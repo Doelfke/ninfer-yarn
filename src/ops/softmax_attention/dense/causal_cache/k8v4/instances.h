@@ -16,6 +16,6 @@ struct K8V4KvGroupedInstance {
     using Merge                    = K8V4KvMergeSchedule;
 };
 
-using K8V4KvTiledInstance = K8V4KvTiledMmaSchedule<64, 64>;
+using K8V4KvTiledInstance = K8V4KvTiledMmaSchedule<kMxfp8TiledQueryRows, 64>;
 
 } // namespace ninfer::ops::detail
