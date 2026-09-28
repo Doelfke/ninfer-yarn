@@ -106,11 +106,31 @@ int run_fp8_a8() {
     failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
                           {34816, 5120, 863U, Comparison::Sampled, true, mlp_bulk_invocations});
 
+    constexpr std::array residual6144_decode_invocations{
+        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{8, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{16, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures += run_shape(
+        "FP8_A16", ActivationCompute::A16, make_fp8_weight,
+        {5120, 6144, 855U, Comparison::Sampled, true, residual6144_decode_invocations});
     constexpr std::array residual6144_invocations{
-        Invocation{25, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{17, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
+        Invocation{64, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{129, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{192, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{193, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{256, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{257, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{512, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{513, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{768, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{769, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1025, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
     };
     failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
                           {5120, 6144, 857U, Comparison::Sampled, true, residual6144_invocations});
