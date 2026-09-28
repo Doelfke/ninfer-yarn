@@ -1,5 +1,6 @@
 #include "ninfer/engine.h"
 #include "speculative_page_boundary.h"
+#include "kv_cache_storage.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -78,13 +79,11 @@ int main(int argc, char** argv) {
         options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(2304 * batch);
         options.prefill_chunk   = 2304;
         options.max_concurrency = batch;
-        options.context_cache.device_state_slots     = argc > 7 ? std::stoul(argv[7]) : 3U;
-        options.use_cuda_graph                       = graph;
-        options.enable_vision                        = argc > 6 && std::stoi(argv[6]) != 0;
-        options.kv_cache                             = argc > 5 && std::string(argv[5]) == "int8"
-                                                           ? ninfer::KvCacheStorage::Int8Group64
-                                                           : ninfer::KvCacheStorage::BFloat16;
-        auto penalty                                 = request(24);
+        options.context_cache.device_state_slots = argc > 7 ? std::stoul(argv[7]) : 3U;
+        options.use_cuda_graph                   = graph;
+        options.enable_vision                    = argc > 6 && std::stoi(argv[6]) != 0;
+        options.kv_cache = ninfer::test::parse_kv_cache_storage(argc > 5 ? argv[5] : "bf16");
+        auto penalty     = request(24);
         penalty.execution.sampling.presence_penalty  = 0.5F;
         penalty.execution.sampling.frequency_penalty = 0.25F;
         options.speculative.backend                  = ninfer::SpeculativeBackend::DFlash2;
@@ -92,6 +91,8 @@ int main(int argc, char** argv) {
         options.speculative.proposal_head =
             optimized ? ninfer::ProposalHead::Optimized : ninfer::ProposalHead::Full;
         ninfer::Engine engine(options);
+        require(engine.memory_summary().kv_cache == options.kv_cache,
+                "Engine did not select the requested KV dtype");
         const auto prompt = engine.tokenize_text("Count from one to twenty: one, two, three,");
         ninfer::test::speculative_page_boundary(engine);
         const auto first = engine.generate(engine.prepare_tokens(prompt), request(24));

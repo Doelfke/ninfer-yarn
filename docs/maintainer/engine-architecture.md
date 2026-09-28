@@ -534,6 +534,10 @@ ResourceManager 与完成所有 request response。内部不变量错误不能�
 - workspace 是 Program 启动时统一规划的 backing，Vision、Text 和 speculative schedule 按互斥 lifetime
   使用其内部区域。
 
+Op 拥有其声明执行范围内的 Graph 更新兼容性；Program 捕获完整执行单元，并在启动时验证同类
+定义的更新。长度档位用于限制预留资源，不等同于拓扑类别。Program 不复制 target attention 的
+私有 kernel 分派边界；draft 等其他 Op 的实际拓扑要求仍由完整执行单元分别处理。
+
 容量查询消费与执行同源的逐层参数和 Use。Allocation scope 同时用于布局计算与实际执行；
 顺序互斥的 scratch 取峰值，跨阶段仍活跃的数据计入完整存活期。Vision handoff 保留至 Text
 及所选 MTP 的最后消费者，speculative pending features 和 verify records 保留至对应提交边界。

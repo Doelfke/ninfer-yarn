@@ -538,7 +538,7 @@ counts, or kernel-name filters in these benchmarks.
 `ninfer_causal_softmax_attention_bench` measures the two public causal-cache entries:
 append-and-attend and cached-only. It covers the registered D256 H24/KV4 and H16/KV2 geometries
 with BF16, INT8-G64, FP8-E4M3FN-row256, NVFP4-G16, and K8V4 KV storage. Production dispatch
-receives the caller-visible execution envelope and owns all decode, prompt, Small-T, and split-KV
+receives the caller-visible execution envelope and owns prefill, decode/spec and work-partition
 choices. `all` emits every storage mode as an independent row.
 
 Append-and-attend accepts `--batch 1,2,4,8`; each ordinary `--context L` point gives every row the
@@ -562,9 +562,13 @@ so broad Graph-envelope measurements can be distinguished from exact-length meas
 ```bash
 cmake --build build --parallel --target ninfer_causal_softmax_attention_bench
 ./build/bench/ninfer_causal_softmax_attention_bench \
-  --entry both --geometry all --kv-dtype all --batch 1 \
-  --tokens 1,2,4,6,8,12,16 --context 0,128,2048,8192 \
+  --entry append --geometry all --kv-dtype all --batch 1,2,4,8 \
+  --tokens 1,2,4,8,16 --context 8192,32768,131072 --mapping fragmented \
   --execution graph --cache cold --warmup 10 --repeat 61
+./build/bench/ninfer_causal_softmax_attention_bench \
+  --entry append --geometry all --kv-dtype all --batch 1 \
+  --tokens 1024 --context 8192,32768,131072 --mapping fragmented \
+  --execution eager --cache cold --warmup 10 --repeat 61
 ./build/bench/ninfer_causal_softmax_attention_bench \
   --entry append --geometry d256-h16-kv2 --kv-dtype int8 \
   --batch 3 --tokens 6 --row-contexts 127,2047,63 \
@@ -573,14 +577,6 @@ cmake --build build --parallel --target ninfer_causal_softmax_attention_bench
 ./build/bench/ninfer_causal_softmax_attention_bench \
   --entry cached --geometry d256-h16-kv2 --kv-dtype int8 \
   --tokens 16 --context 8192 --execution graph --cache cold --profile
-./build/bench/ninfer_causal_softmax_attention_bench \
-  --entry append --geometry all --kv-dtype fp8 --batch 1 \
-  --tokens 1 --context 16384 --mapping fragmented \
-  --execution graph --cache cold --warmup 100 --repeat 201
-./build/bench/ninfer_causal_softmax_attention_bench \
-  --entry append --geometry all --kv-dtype fp8 --batch 1 \
-  --tokens 1024 --context 16384 --mapping fragmented \
-  --execution eager --cache cold --warmup 10 --repeat 61
 ```
 
 The report exposes separate QK/PV logical FLOPs, their full-public-Op-equivalent TFLOP/s,
@@ -590,6 +586,14 @@ vector are 516 for FP8, 288 for NVFP4, and 402 for K8V4 (258-byte K plus 144-byt
 complete Op latency. Payload rates exclude repeated reads and do not measure DRAM bandwidth.
 Logical FLOPs do not model private operand conversion, padding, or additional quantization work;
 the benchmark therefore does not infer Tensor Core utilization from a storage-format label.
+
+Use ordinary benchmark latency `t`, not profiler replay duration, for effective roofline fractions:
+`unique_kv_bytes / (t * peak_bandwidth)` and
+`(qk_flops / peak_qk_ops + pv_flops / peak_pv_ops) / t`, with consistent units and explicitly stated
+hardware peaks. Current INT8 QK uses native INT8, FP8/K8V4 QK uses native FP8, and BF16/NVFP4 QK
+and all PV use 16-bit Tensor Core throughput references. In particular, NVFP4 KV storage does not
+imply native FP4 QK. These useful-work fractions differ from profiler pipeline activity and actual
+DRAM traffic; use targeted profiling to explain the remaining gap.
 
 `ninfer_context_softmax_attention_bench` measures the public read-only context-plus-query contract
 at Q32/KV8/D128 with BF16 context storage. `T` is a complete non-causal query block and `L` is its
@@ -1048,7 +1052,7 @@ measure Engine inference.
 
 ## 35B dFlash causal Attention qualification
 
-The public causal benchmark covers exact verify widths `W=1..16`, both KV codecs, and the
+The public causal benchmark covers exact verify widths `W=1..16`, all five KV types, and the
 append-and-attend and already-cached entries for the D256 H16/KV2 geometry. Batched target
 qualification uses the append entry:
 

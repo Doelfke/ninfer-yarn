@@ -346,10 +346,10 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                     }
                     (void)workspace::gdn_recurrent_output(layout, config, last);
                     if (path == GdnWorkspacePath::Prefill) {
-                        scratch(layout, ops::gated_delta_net_workspace_capacity_bytes(
-                                            dimension(config.gdn->linear_num_key_heads),
-                                            dimension(config.gdn->linear_num_value_heads),
-                                            first, last));
+                        scratch(layout,
+                                ops::gated_delta_net_workspace_capacity_bytes(
+                                    dimension(config.gdn->linear_num_key_heads),
+                                    dimension(config.gdn->linear_num_value_heads), first, last));
                     }
                     (void)workspace::gdn_normalized_output(layout, config, last);
                     add_scratch(layout, gdn.output, first, last);
@@ -878,24 +878,19 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
                                                       "MTP exact-b graph allowance");
         } else {
-            const auto class_allowance = [&](std::uint32_t batch_size) {
-                const auto profiles = dflash_graph_profiles(
-                    impl->speculative_backend, impl->capacity, impl->draft_window, batch_size);
-                return graph_topology_allowance(
-                    profiles,
-                    [&](GraphExecutionProfile profile) {
-                        const std::uint64_t final_visible = std::min<std::uint64_t>(
-                            impl->capacity,
-                            static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
-                        return (final_visible <= 4096 ? 64ULL : 96ULL) * kMiB;
-                    },
-                    "DFlash graph allowance");
-            };
-            for (std::uint32_t batch_size = 1; batch_size <= impl->max_concurrency; ++batch_size) {
-                impl->graph_allowance_bytes =
-                    checked_add(impl->graph_allowance_bytes, class_allowance(batch_size),
-                                "DFlash exact-b graph allowance");
-            }
+            const auto profiles = dflash_graph_profiles(impl->speculative_backend, impl->capacity,
+                                                        impl->draft_window);
+            const auto per_batch_allowance = graph_topology_allowance(
+                profiles,
+                [&](GraphExecutionProfile profile) {
+                    const std::uint64_t final_visible = std::min<std::uint64_t>(
+                        impl->capacity,
+                        static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
+                    return (final_visible <= 4096 ? 64ULL : 96ULL) * kMiB;
+                },
+                "DFlash graph allowance");
+            impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
+                                                      "DFlash exact-b graph allowance");
         }
     }
 

@@ -373,9 +373,9 @@ void ProgramImpl::prepare_graphs() {
         }
     }
     if (is_masked_draft_backend(speculative_backend)) {
-        const auto batch_one_profiles =
-            dflash_graph_profiles(speculative_backend, capacity, draft_window, 1);
-        validate_graph_profiles(batch_one_profiles, capacity - 1, "DFlash");
+        const auto planned_profiles =
+            dflash_graph_profiles(speculative_backend, capacity, draft_window);
+        validate_graph_profiles(planned_profiles, capacity - 1, "DFlash");
         execution::DFlashBatchContext dflash_state{execution_core(),
                                                    decoder->text_kv,
                                                    *dflash,
@@ -383,7 +383,7 @@ void ProgramImpl::prepare_graphs() {
                                                    *dflash_host_ingress,
                                                    *dflash_host_egress,
                                                    state_images->continuation_hidden_store()};
-        const GraphExecutionProfile code_warm = batch_one_profiles.front();
+        const GraphExecutionProfile code_warm = planned_profiles.front();
         const ops::CausalAttentionExecutionEnvelope code_warm_target{
             1, static_cast<std::uint32_t>(std::min<std::uint64_t>(
                    capacity, static_cast<std::uint64_t>(code_warm.max) + draft_window + 1ULL))};
@@ -394,13 +394,8 @@ void ProgramImpl::prepare_graphs() {
                                        code_warm_target, nullptr);
         device.synchronize();
 
-        dflash_graphs.profiles.reserve(batch_one_profiles.size() * max_concurrency);
+        dflash_graphs.profiles.reserve(planned_profiles.size() * max_concurrency);
         for (std::uint32_t batch_size = 1; batch_size <= max_concurrency; ++batch_size) {
-            const auto planned_profiles = batch_size == 1
-                                              ? batch_one_profiles
-                                              : dflash_graph_profiles(speculative_backend, capacity,
-                                                                      draft_window, batch_size);
-            validate_graph_profiles(planned_profiles, capacity - 1, "DFlash");
             for (const GraphExecutionProfile planned : planned_profiles) {
                 dflash_graphs.profiles.emplace_back();
                 DecodeGraphProfile& profile    = dflash_graphs.profiles.back();
