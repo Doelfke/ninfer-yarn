@@ -42,14 +42,37 @@ int run_fp8_a8() {
     };
     failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
                           {14336, 5120, 833U, Comparison::Sampled, true, attn_bulk_invocations});
+    constexpr std::array gdn_decode_invocations{
+        Invocation{1, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{8, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{16, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures += run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
+                          {16384, 5120, 837U, Comparison::Sampled, true, gdn_decode_invocations});
     constexpr std::array gdn_invocations{
-        Invocation{11, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{17, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
         Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
     };
     failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
                           {16384, 5120, 839U, Comparison::Sampled, true, gdn_invocations});
+    constexpr std::array gdn_bulk_invocations{
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{129, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{192, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{193, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{256, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{257, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{384, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{385, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{512, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{513, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1025, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+    };
+    failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
+                          {16384, 5120, 841U, Comparison::Sampled, true, gdn_bulk_invocations});
     constexpr std::array mlp_decode_invocations{
         Invocation{1, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{2, CallForm::Policy, ops::LinearPolicy::AllowA8},
