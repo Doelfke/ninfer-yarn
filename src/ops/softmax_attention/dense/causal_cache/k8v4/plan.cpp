@@ -5,6 +5,9 @@
 #include <stdexcept>
 
 namespace ninfer::ops::detail {
+namespace {
+constexpr int kGroupedPrefillMaxWidth = 80;
+} // namespace
 
 K8V4KvCausalPlan make_k8v4_kv_causal_plan(int heads, int width, int batch,
                                           CausalAttentionExecutionEnvelope envelope) {
@@ -14,9 +17,9 @@ K8V4KvCausalPlan make_k8v4_kv_causal_plan(int heads, int width, int batch,
         envelope.max_visible_keys > kCausalAttentionMaximumVisibleKeys)
         throw std::invalid_argument("K8V4 attention: invalid plan inputs");
     constexpr int grouped_limit = K8V4KvCausalPlan::kTokenTile;
-    const auto family           = width <= grouped_limit ? K8V4KvFamily::Grouped
-                                  : width <= 16          ? K8V4KvFamily::ParallelGrouped
-                                                         : K8V4KvFamily::Tiled;
+    const auto family           = width <= grouped_limit             ? K8V4KvFamily::Grouped
+                                  : width <= kGroupedPrefillMaxWidth ? K8V4KvFamily::ParallelGrouped
+                                                                     : K8V4KvFamily::Tiled;
     if (family == K8V4KvFamily::Tiled)
         return {family,
                 heads,
@@ -27,8 +30,9 @@ K8V4KvCausalPlan make_k8v4_kv_causal_plan(int heads, int width, int batch,
                 mxfp8_tiled_partition(heads, width, envelope.max_visible_keys)};
     const int tiles =
         family == K8V4KvFamily::ParallelGrouped ? (width + grouped_limit - 1) / grouped_limit : 1;
-    const int query_tile =
-        family == K8V4KvFamily::ParallelGrouped ? (width + 1) / 2 : std::min(width, grouped_limit);
+    const int query_tile        = family == K8V4KvFamily::ParallelGrouped && width <= 16
+                                      ? (width + 1) / 2
+                                      : std::min(width, grouped_limit);
     const int independent_tiles = batch * (heads == 24 ? 4 : 2) * tiles;
     // Decode permits two resident CTAs per SM. Spec uses one; add a wave when
     // rounding to complete query tiles would leave over 10% of the 170 SMs idle.
@@ -46,7 +50,7 @@ K8V4KvCausalPlan make_k8v4_kv_causal_plan(int heads, int width, int batch,
 std::size_t k8v4_kv_workspace_bytes(int heads, int batch, int min_width, int max_width,
                                     CausalAttentionExecutionEnvelope envelope) {
     std::size_t maximum = 0;
-    for (int width = min_width; width <= std::min(max_width, 16); ++width) {
+    for (int width = min_width; width <= std::min(max_width, kGroupedPrefillMaxWidth); ++width) {
         const auto plan = make_k8v4_kv_causal_plan(heads, width, batch, envelope);
         if (plan.family == K8V4KvFamily::Tiled) continue;
         const int splits = plan.partition.capacity;
@@ -54,8 +58,9 @@ std::size_t k8v4_kv_workspace_bytes(int heads, int batch, int min_width, int max
         (void)allocate_causal_partials(layout, heads, width, splits, batch);
         maximum = std::max(maximum, layout.peak_bytes(1));
     }
-    return std::max(maximum, mxfp8_tiled_workspace_bytes(heads, min_width, max_width,
-                                                         envelope.max_visible_keys));
+    return std::max(maximum, mxfp8_tiled_workspace_bytes(
+                                 heads, std::max(min_width, kGroupedPrefillMaxWidth + 1), max_width,
+                                 envelope.max_visible_keys));
 }
 
 } // namespace ninfer::ops::detail

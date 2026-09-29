@@ -2564,7 +2564,7 @@ int verify_workspace_capacity_contract(KvCacheStorage storage) {
         ++failures;
     }
 
-    if (storage == KvCacheStorage::Fp8E4M3Row256 || storage == KvCacheStorage::Fp8KeyNvfp4Value) {
+    {
         // Prefill split counts can decrease as query width grows. The interval
         // query must still cover every supported point, including before a drop.
         for (const auto& item : kGeometries) {
@@ -2618,6 +2618,31 @@ int run_numerical_profile_cases(KvCacheStorage storage) {
     return failures;
 }
 
+int run_small_prefill_cases(KvCacheStorage storage) {
+    int failures = 0;
+    const std::array<int, 4> append_queries{0, 7, 16, 33};
+    const std::array<int, 4> cached_queries{0, 63, 64, 128};
+    const std::array<int, 3> boundary_queries{0, 127, 256};
+    for (const auto& geometry : kGeometries) {
+        failures += run_a1_case(geometry, storage, {34, 8191, 32768, 1301u, false, true},
+                                MappingPattern::Fragmented, append_queries);
+        failures += run_a3_case(geometry, storage,
+                                {129, 32768, 131072, 1302u, false, false, 1.8f * std::sqrt(3.0f)},
+                                MappingPattern::Fragmented, cached_queries);
+        failures += run_a3_case(geometry, storage, {257, 8192, 16384, 1303u},
+                                MappingPattern::Offset, boundary_queries);
+        failures += run_batch_case(
+            geometry, storage, {65, {8191}, {17}, {0}, MappingPattern::Fragmented, 1304u}, 32768);
+        if (storage == KvCacheStorage::Fp8E4M3Row256 ||
+            storage == KvCacheStorage::Fp8KeyNvfp4Value) {
+            failures += run_a3_case(geometry, storage,
+                                    {34, 8192, 32768, 1305u, false, false, 1.8f * std::sqrt(3.0f)},
+                                    MappingPattern::Fragmented, append_queries);
+        }
+    }
+    return failures;
+}
+
 int run_storage_cases(KvCacheStorage storage) {
     int failures = verify_workspace_capacity_contract(storage);
     if (storage == KvCacheStorage::Nvfp4Group16) {
@@ -2647,6 +2672,7 @@ int run_storage_cases(KvCacheStorage storage) {
     failures += run_graph_envelope_cases(storage);
     failures += run_verify_width_cases(storage);
     failures += run_numerical_profile_cases(storage);
+    failures += run_small_prefill_cases(storage);
     return failures;
 }
 

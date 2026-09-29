@@ -2207,7 +2207,7 @@ int exercise_attention_integration(const char* artifact) {
     if (batch > 1 && after.decode_row_rounds - before.decode_row_rounds <=
                          after.decode_rounds - before.decode_rounds)
         throw std::runtime_error("attention integration did not execute a multi-row decode round");
-    continuation.push_back(seed.back());
+    continuation.insert(continuation.end(), 33, seed.back());
     const auto reused = engine.generate(engine.prepare_tokens(continuation), fixed_output(8));
     const auto fresh = engine.generate(engine.prepare_tokens(continuation), fixed_output(8, false));
     validate(reused, 8);
@@ -2215,6 +2215,9 @@ int exercise_attention_integration(const char* artifact) {
     if (reused.reused_prompt_tokens == 0 || fresh.reused_prompt_tokens != 0)
         throw std::runtime_error(
             "attention integration prefix continuation did not follow reuse policy");
+    const auto appended = reused.prompt.prompt_tokens - reused.reused_prompt_tokens;
+    if (appended <= 16 || appended > 256)
+        throw std::runtime_error("attention integration did not exercise small prefix append");
     const auto memory = engine.memory_summary();
     if (memory.workspace_logical_peak_bytes == 0 ||
         memory.workspace_logical_peak_bytes > memory.workspace.capacity_bytes)
@@ -2222,7 +2225,9 @@ int exercise_attention_integration(const char* artifact) {
     std::cout << "attention integration KV=" << setting("NINFER_TEST_KV_DTYPE", "bf16")
               << " backend=" << backend_name << " B=" << batch
               << " workspace_peak=" << memory.workspace_logical_peak_bytes
-              << " graph_allowance=" << memory.cuda_graph_allowance_bytes << '\n';
+              << " graph_allowance=" << memory.cuda_graph_allowance_bytes
+              << " appended=" << appended
+              << " append_prefill_ms=" << reused.timings.prefill_seconds * 1000 << '\n';
     return 0;
 }
 
