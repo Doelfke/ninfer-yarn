@@ -133,7 +133,7 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
             if (!state.execution.io.dflash_prefill) {
                 throw std::logic_error("DFlash prefill count storage is unavailable");
             }
-            local_counts = state.execution.io.dflash_prefill->produced_count;
+            local_counts = state.execution.io.dflash_prefill->local_append_count;
             ops::set_i32_scalar(local_counts, dimension(config.sliding_window.value_or(0)),
                                 state.execution.device.stream);
         }

@@ -326,21 +326,10 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
             }
 
             if (is_masked_draft_backend(speculative_backend)) {
-                if (!dflash || !io.dflash_decode || !sequence.kv ||
+                if (!dflash || !io.dflash_prefill || !dflash_prefill_host_ingress || !sequence.kv ||
                     (backend_kv_cache() && !sequence.kv->backend)) {
                     throw std::logic_error("DFlash forced continuation state is incomplete");
                 }
-                *dflash_host_ingress                            = {};
-                dflash_host_ingress->active_lanes[0]            = static_cast<std::int32_t>(lane);
-                const StateImageSelectors selectors             = state_selectors(sequence);
-                dflash_host_ingress->state_source_slots[0]      = selectors.source;
-                dflash_host_ingress->state_destination_slots[0] = selectors.destination;
-                dflash_host_ingress->dflash_kv_table_rows[0] =
-                    sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
-                                         : 0;
-                CUDA_CHECK(cudaMemcpyAsync(io.dflash_decode->ingress.data, dflash_host_ingress,
-                                           sizeof(qwen3_5::DFlashDecodeIngress),
-                                           cudaMemcpyHostToDevice, device.stream));
             }
 
             std::uint32_t cursor = base;
@@ -362,7 +351,9 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
                     selectors.source,
                     selectors.destination,
                     0,
-                    dflash_host_ingress};
+                    sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
+                                         : 0,
+                    dflash_prefill_host_ingress};
                 mark_workspace_usage(speculative_backend == SpeculativeBackend::Mtp
                                          ? workspace_plan.mtp_prefill
                                          : workspace_plan.text_prefill);

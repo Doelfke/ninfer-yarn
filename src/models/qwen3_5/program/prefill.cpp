@@ -24,18 +24,26 @@ namespace ninfer::models::qwen3_5::execution {
 namespace {
 
 DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
-    if (!state.execution.io.dflash_decode || state.dflash_host_ingress == nullptr) {
+    if (!state.execution.io.dflash_prefill || state.dflash_prefill_host_ingress == nullptr) {
         throw std::logic_error("DFlash prefill controls are unavailable");
     }
     return dflash_feature_sink(
         state, [&state](const Tensor& features, const Tensor& positions, bool rewrite_checkpoint) {
-            auto& frame  = *state.execution.io.dflash_decode;
-            Tensor count = frame.append_counts.slice(0, 0, 1);
-            Tensor lane  = frame.state_destination_slots.slice(0, 0, 1);
-            Tensor row   = frame.dflash_kv_table_rows.slice(0, 0, 1);
-            ops::set_i32_scalar(count, features.ne[1], state.execution.device.stream);
+            auto& frame = *state.execution.io.dflash_prefill;
+            // Target execution and draft append use the same chunk bindings. Decode may have
+            // used another compact row, or a checkpoint may have forked the destination slot.
+            *state.dflash_prefill_host_ingress = {
+                .append_count           = features.ne[1],
+                .state_destination_slot = state.state_destination_slot,
+                .full_kv_table_row      = state.dflash_kv_table_row,
+            };
+            CUDA_CHECK(cudaMemcpyAsync(frame.ingress.data, state.dflash_prefill_host_ingress,
+                                       sizeof(qwen3_5::DFlashPrefillIngress),
+                                       cudaMemcpyHostToDevice, state.execution.device.stream));
             const auto exact = static_cast<std::uint32_t>(features.ne[1]);
-            dflash_append_context(state, features, positions, count, lane, row, {exact, exact});
+            dflash_append_context(state, features, positions, frame.append_count,
+                                  frame.state_destination_slot, frame.full_kv_table_row,
+                                  {exact, exact});
             (void)rewrite_checkpoint;
         });
 }
@@ -669,19 +677,10 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
         sequence.rebuild_tail_begin = request_plan.root_rebuild_tail_begin;
 
         if (is_masked_draft_backend(speculative_backend)) {
-            if (!dflash || !io.dflash_decode || (backend_kv_cache() && !sequence.kv->backend)) {
+            if (!dflash || !io.dflash_prefill || !dflash_prefill_host_ingress ||
+                (backend_kv_cache() && !sequence.kv->backend)) {
                 throw std::logic_error("DFlash prefill state is incomplete");
             }
-            *dflash_host_ingress                       = {};
-            dflash_host_ingress->active_lanes[0]       = static_cast<std::int32_t>(sequence.lane);
-            const StateImageSelectors selectors        = state_selectors(sequence);
-            dflash_host_ingress->state_source_slots[0] = selectors.source;
-            dflash_host_ingress->state_destination_slots[0] = selectors.destination;
-            dflash_host_ingress->dflash_kv_table_rows[0] =
-                sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend) : 0;
-            CUDA_CHECK(cudaMemcpyAsync(io.dflash_decode->ingress.data, dflash_host_ingress,
-                                       sizeof(qwen3_5::DFlashDecodeIngress), cudaMemcpyHostToDevice,
-                                       device.stream));
         }
 
         staged.elapsed_seconds += std::chrono::duration<double>(Clock::now() - started).count();
@@ -1021,7 +1020,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             selectors.source,
             selectors.destination,
             staged.initial_mtp_extent,
-            dflash_host_ingress};
+            0,
+            dflash_prefill_host_ingress};
 
         if (staged.mtp_bridge == MtpBridgeMode::BeforeSuffix) {
             if (staged.cursor != staged.base || staged.base == 0 ||
@@ -1074,6 +1074,9 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 selectors                             = state_selectors(sequence);
                 schedule_state.state_source_slot      = selectors.source;
                 schedule_state.state_destination_slot = selectors.destination;
+                schedule_state.dflash_kv_table_row =
+                    sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
+                                         : 0;
                 if (staged.next_capture < staged.capture_groups.size()) {
                     rewrite_capture_hidden =
                         state_images->continuation_hidden_slot(selectors.destination);

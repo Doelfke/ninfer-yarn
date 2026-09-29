@@ -626,8 +626,9 @@ public:
     qwen3_5::MtpDecodeIngress* mtp_host_ingress = nullptr;
     qwen3_5::MtpDecodeEgress* mtp_host_egress   = nullptr;
     std::optional<PinnedHostBuffer> dflash_host;
-    qwen3_5::DFlashDecodeIngress* dflash_host_ingress = nullptr;
-    qwen3_5::DFlashDecodeEgress* dflash_host_egress   = nullptr;
+    qwen3_5::DFlashDecodeIngress* dflash_host_ingress          = nullptr;
+    qwen3_5::DFlashDecodeEgress* dflash_host_egress            = nullptr;
+    qwen3_5::DFlashPrefillIngress* dflash_prefill_host_ingress = nullptr;
 
     std::size_t workspace_logical_peak_bytes = 0;
     std::size_t vision_handoff_peak_bytes    = 0;
